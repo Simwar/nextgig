@@ -1,0 +1,33 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Astro
+.ast/
+
+# Dependencies
+node_modules/
+
+# Build
+dist/
+
+# Local data (file-backed LibSQL: subscriptions + agent memory)
+data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Bun
+bun.lockb

@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://astropods.com/schema/package.json
+spec: package/v1
+name: job-hunter
+meta: {}
+
+agent:
+  build:
+    context: .
+    dockerfile: Dockerfile
+  # Custom chat frontend on port 80 (agent/webserver.ts). No messaging sidecar:
+  # the frontend and scheduler drive the agent in-process via agent.generate().
+  interfaces:
+    frontend: true
+  inputs:
+    # Email delivery for scheduled job-match digests, via Resend.
+    # Optional — email can also be configured at runtime from the app's ⚙ Settings
+    # panel (stored in ./data). This env var, when set, takes precedence.
+    - name: RESEND_API_KEY
+      datatype: string
+      secret: true
+      description: Resend API key (re_…). Get one free at resend.com. Optional — can be set in-app instead.
+    - name: RESEND_FROM
+      datatype: string
+      secret: false
+      description: 'From address, e.g. "Job Hunter <jobs@yourdomain.com>". Defaults to onboarding@resend.dev (verify a domain in Resend to email arbitrary recipients).'
+
+models:
+  anthropic:
+    provider: anthropic
+
+dev:
+  interfaces:
+    frontend:
+      port: 80
