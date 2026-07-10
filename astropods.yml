@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://astropods.com/schema/package.json
 spec: package/v1
-name: job-hunter
+name: nextgig
 meta: {}
 
 agent:
@@ -22,7 +22,7 @@ agent:
     - name: RESEND_FROM
       datatype: string
       secret: false
-      description: 'From address, e.g. "Job Hunter <jobs@yourdomain.com>". Defaults to onboarding@resend.dev (verify a domain in Resend to email arbitrary recipients).'
+      description: 'From address, e.g. "NextGig <jobs@yourdomain.com>". Defaults to onboarding@resend.dev (verify a domain in Resend to email arbitrary recipients).'
 
 models:
   anthropic:

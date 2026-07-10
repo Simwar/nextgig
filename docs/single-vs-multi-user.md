@@ -1,6 +1,6 @@
 # Personal vs. multi-user: the trade-off
 
-Job Hunter can run in two modes. This is the decision and what each mode costs.
+NextGig can run in two modes. This is the decision and what each mode costs.
 
 Today the agent is **effectively single-user-safe but multi-user-capable-by-accident**:
 data is already keyed per browser session (see below), but there is **no login,

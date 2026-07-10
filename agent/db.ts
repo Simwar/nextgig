@@ -1,5 +1,5 @@
 /**
- * Subscription store for job-hunter.
+ * Subscription store for nextgig.
  *
  * Persists each user's skill matrix, location preferences, and notification
  * settings to a file-backed LibSQL database so they survive restarts and are

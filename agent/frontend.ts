@@ -1,5 +1,5 @@
 /**
- * Single-file chat frontend for Job Hunter, served by agent/webserver.ts.
+ * Single-file chat frontend for NextGig, served by agent/webserver.ts.
  *
  * Kept as an inlined string (rather than a static file) so it ships inside the
  * agent/ bundle and needs no extra COPY on the read-only production filesystem.
@@ -16,7 +16,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Job Hunter</title>
+<title>NextGig</title>
 <style>
   :root {
     --bg: #0b0d14; --panel: #141826; --panel-2: #1b2032; --line: #262c40;
@@ -177,7 +177,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
 <body>
 <header>
   <span class="logo"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke-width="2.2"><defs><linearGradient id="lg" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse"><stop stop-color="#7c5cff"/><stop offset="1" stop-color="#ff5c9d"/></linearGradient></defs><g stroke="url(#lg)"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/></g><circle cx="12" cy="12" r="1.7" fill="url(#lg)"/></svg></span>
-  <h1>Job Hunter</h1>
+  <h1>NextGig</h1>
   <button class="gearbtn" id="settings-btn" title="Email settings" aria-label="Email settings"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
 </header>
 
@@ -212,7 +212,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
   <div class="wrap">
     <div class="composer">
       <button class="attach-btn" id="attach" title="Upload LinkedIn PDF or CV" aria-label="Upload PDF"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
-      <textarea id="input" rows="1" placeholder="Message Job Hunter...  (paste your profile, ask about jobs, or set up alerts)"></textarea>
+      <textarea id="input" rows="1" placeholder="Message NextGig...  (paste your profile, ask about jobs, or set up alerts)"></textarea>
       <button class="send-btn" id="send" title="Send" aria-label="Send"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg></button>
     </div>
     <div class="hint">Tip: LinkedIn profile -&gt; More -&gt; Save to PDF, then drop it anywhere here.</div>
@@ -228,7 +228,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
     <label for="rk">Resend API key</label>
     <input id="rk" type="password" autocomplete="off" placeholder="re_... (leave blank to keep current)" />
     <label for="rf">From address (optional)</label>
-    <input id="rf" type="text" placeholder="Job Hunter &lt;onboarding@resend.dev&gt;" />
+    <input id="rf" type="text" placeholder="NextGig &lt;onboarding@resend.dev&gt;" />
     <label for="rt">Send a test to</label>
     <input id="rt" type="email" placeholder="you@example.com" />
     <div class="modal-actions"><button id="save-test">Save &amp; send test</button></div>

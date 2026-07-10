@@ -15,7 +15,7 @@
 import { getSetting, setSetting } from './settings';
 
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
-const DEFAULT_FROM = 'Job Hunter <onboarding@resend.dev>';
+const DEFAULT_FROM = 'NextGig <onboarding@resend.dev>';
 
 const KEY_SETTING = 'resend_api_key';
 const FROM_SETTING = 'resend_from';
@@ -108,9 +108,9 @@ export async function sendEmail(args: SendArgs): Promise<void> {
 export async function sendTestEmail(to: string): Promise<void> {
   await sendEmail({
     to,
-    subject: 'Job Hunter — email is working ✅',
+    subject: 'NextGig — email is working ✅',
     text:
-      'This is a test from your Job Hunter agent. If you received it, scheduled job-match ' +
+      'This is a test from your NextGig agent. If you received it, scheduled job-match ' +
       'digests will be delivered here.',
   });
 }

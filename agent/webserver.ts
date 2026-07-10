@@ -1,5 +1,5 @@
 /**
- * Custom chat frontend for Job Hunter.
+ * Custom chat frontend for NextGig.
  *
  * Serves a single-page chat UI on port 80 (the port the Astropods platform
  * routes to for `agent.interfaces.frontend`). PDF uploads (LinkedIn export or

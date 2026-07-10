@@ -1,5 +1,5 @@
 /**
- * job-hunter - Builds a skill matrix from a user's pasted LinkedIn profile,
+ * nextgig - Builds a skill matrix from a user's pasted LinkedIn profile,
  * captures their location and notification preferences, and emails scheduled
  * job-match digests found via web search.
  *
@@ -26,7 +26,7 @@ import { startFrontend } from './webserver';
 
 // File-backed storage so the skill matrix, preferences, and agent memory
 // survive restarts and are visible to the scheduler. Falls back to in-memory
-// only when JOB_HUNTER_IN_MEMORY=1.
+// only when NEXTGIG_IN_MEMORY=1.
 const memory = new Memory({
   storage: new LibSQLStore({
     id: 'memory',
@@ -50,7 +50,7 @@ function resolveOtlpTracesEndpoint(): string {
 const observability = new Observability({
   configs: {
     otel: {
-      serviceName: 'job-hunter',
+      serviceName: 'nextgig',
       exporters: [
         new OtelExporter({
           provider: {
@@ -65,7 +65,7 @@ const observability = new Observability({
   },
 });
 
-const INSTRUCTIONS = `You are Job Hunter, an assistant that finds job postings matching a user's skills and location, and emails them regular digests.
+const INSTRUCTIONS = `You are NextGig, an assistant that finds job postings matching a user's skills and location, and emails them regular digests.
 
 Onboard a new user in this order, one step at a time, conversationally:
 
@@ -91,8 +91,8 @@ If the user asks for notifications but email isn't configured (set_preferences r
 Be concise and friendly. Confirm each step before moving to the next.`;
 
 const agent = new Agent({
-  id: 'job-hunter',
-  name: 'Job Hunter',
+  id: 'nextgig',
+  name: 'NextGig',
   instructions: INSTRUCTIONS,
   // Use the @ai-sdk/anthropic provider instance (reads ANTHROPIC_API_KEY) so we
   // can attach Anthropic's native server-side web search tool — no jobs-API key.
@@ -115,9 +115,9 @@ const agent = new Agent({
   // The collector endpoint is injected by `ast dev`.
   defaultOptions: {
     tracingOptions: {
-      tags: ['astro', 'agent:job-hunter'],
+      tags: ['astro', 'agent:nextgig'],
       metadata: {
-        agent_id: 'job-hunter',
+        agent_id: 'nextgig',
       },
     },
   },
@@ -128,7 +128,7 @@ const agent = new Agent({
 // there is no serve() call — the agent is driven in-process by agent.generate().)
 new Mastra({
   agents: {
-    'job-hunter': agent,
+    'nextgig': agent,
   },
   observability,
 });

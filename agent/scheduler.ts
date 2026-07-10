@@ -34,7 +34,7 @@ const EXCLUDE_IN_PROMPT = 60;
 // Link verification: open each candidate posting and drop obvious dead ones.
 const VERIFY_TIMEOUT_MS = 8000;
 const VERIFY_BODY_BYTES = 20000;
-const VERIFY_DISABLED = process.env.JOB_HUNTER_VERIFY_LINKS === '0';
+const VERIFY_DISABLED = process.env.NEXTGIG_VERIFY_LINKS === '0';
 // High-signal phrases that a posting is closed/expired. Kept conservative so we
 // don't drop live postings because of generic text elsewhere on the page.
 const DEAD_PHRASES = [
@@ -54,7 +54,7 @@ const DEAD_PHRASES = [
   'position not found',
 ];
 
-const CRON_RESOURCE_ID = 'job-hunter-scheduler';
+const CRON_RESOURCE_ID = 'nextgig-scheduler';
 const CRON_THREAD_PREFIX = 'digest:';
 
 // Wake at the top of every hour. (Avoid `*` slash exprs in block comments —
@@ -240,7 +240,7 @@ export async function runDigest(
 
 function digestSubject(sub: Subscription, n: number): string {
   const where = [sub.city, sub.country].filter(Boolean).join(', ') || 'your area';
-  return `Job Hunter: ${n} new match${n === 1 ? '' : 'es'} in ${where}`;
+  return `NextGig: ${n} new match${n === 1 ? '' : 'es'} in ${where}`;
 }
 
 function buildDigestPrompt(sub: Subscription, recent: SentJobRecord[]): string {
@@ -352,7 +352,7 @@ async function isLivePosting(url: string): Promise<boolean> {
       redirect: 'follow',
       signal: ctrl.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; JobHunterBot/1.0; +https://astropods.com)',
+        'User-Agent': 'Mozilla/5.0 (compatible; NextGigBot/1.0; +https://astropods.com)',
         Accept: 'text/html,application/xhtml+xml,*/*',
       },
     });
@@ -382,7 +382,7 @@ function renderDigest(sub: Subscription, jobs: Job[]): { text: string; html: str
     if (j.url) textLines.push(`   Apply: ${j.url}`);
     textLines.push('');
   });
-  textLines.push('You are receiving this because you asked Job Hunter for job alerts.');
+  textLines.push('You are receiving this because you asked NextGig for job alerts.');
 
   const items = jobs
     .map((j) => {
@@ -395,7 +395,7 @@ function renderDigest(sub: Subscription, jobs: Job[]): { text: string; html: str
   const html =
     `<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;font-size:15px">` +
     `<p>${escapeHtml(intro)}</p><ul style="padding-left:18px">${items}</ul>` +
-    `<p style="color:#888;font-size:12px">You are receiving this because you asked Job Hunter for job alerts.</p></div>`;
+    `<p style="color:#888;font-size:12px">You are receiving this because you asked NextGig for job alerts.</p></div>`;
 
   return { text: textLines.join('\n'), html };
 }

@@ -1,5 +1,5 @@
 /**
- * Tools the job-hunter agent uses during onboarding and on demand.
+ * Tools the nextgig agent uses during onboarding and on demand.
  *
  * Web search itself is provided by Anthropic's native server-side web_search
  * tool (wired in agent/index.ts) — it reuses ANTHROPIC_API_KEY, so there is no

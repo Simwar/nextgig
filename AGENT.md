@@ -4,7 +4,7 @@ tags: ["jobs", "job-search", "linkedin", "cv", "email-digest", "notifications", 
 authors:
   - name: "Simon Guerrier"
     account: "simon"
-repository: "github:Simwar/job-hunter"
+repository: "github:Simwar/nextgig"
 capabilities:
   - "Extract a structured skill matrix from a pasted LinkedIn profile or uploaded PDF/CV"
   - "Capture target location and remote (remote/hybrid/onsite) preferences"
@@ -17,15 +17,15 @@ integrations:
   - "Resend"
 ---
 
-# Job Hunter
+# NextGig
 
-Job hunting means running the same searches over and over, re-reading listings you've already seen, and clicking through to postings that turned out to be filled last week. Job Hunter does that loop for you: hand it your LinkedIn profile or CV once, and it emails you a short digest of **new, still-open** roles that match your skills and location — nothing you've already been shown.
+Job hunting means running the same searches over and over, re-reading listings you've already seen, and clicking through to postings that turned out to be filled last week. NextGig does that loop for you: hand it your LinkedIn profile or CV once, and it emails you a short digest of **new, still-open** roles that match your skills and location — nothing you've already been shown.
 
 > **Personal (single-user) agent.** Deploy it by yourself, for yourself, and keep the deployment private. It has no authentication, its email settings are shared per deployment, and all model/email usage bills to your keys — so it is not built for multi-tenant or public multi-user use as-is. See [`docs/single-vs-multi-user.md`](docs/single-vs-multi-user.md) for what running it for multiple users would take.
 
 ## Overview
 
-Job Hunter is a chat agent with a small web frontend. Onboarding is conversational and takes about a minute:
+NextGig is a chat agent with a small web frontend. Onboarding is conversational and takes about a minute:
 
 1. **Profile → skill matrix.** Upload your LinkedIn profile saved as a PDF (LinkedIn → More → Save to PDF) or your CV, or just paste the text. The agent extracts your headline, target job titles, and a skill list with proficiency levels. PDFs are parsed to text server-side — LinkedIn is never scraped.
 2. **Location & preferences.** It asks where you want to work (city, country) and whether you want remote, hybrid, onsite, or any.
