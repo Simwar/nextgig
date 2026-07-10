@@ -18,10 +18,12 @@ agent:
     - name: RESEND_API_KEY
       datatype: string
       secret: true
+      optional: true
       description: Resend API key (re_…). Get one free at resend.com. Optional — can be set in-app instead.
     - name: RESEND_FROM
       datatype: string
       secret: false
+      optional: true
       description: 'From address, e.g. "NextGig <jobs@yourdomain.com>". Defaults to onboarding@resend.dev (verify a domain in Resend to email arbitrary recipients).'
 
 models:
