@@ -22,6 +22,18 @@ The agent's custom tools (`save_profile`, `set_preferences`, …) are ordinary
 client-side tools and run through the gateway's normal (OpenAI-compat)
 client-tool-use loop; only the `tavily_*` search tools are executed gateway-side.
 
+### Model calls must be NON-streaming
+Bifrost's MCP **agent mode** (auto-execution of `tavily_*`) only runs on complete
+responses — it is **incompatible with streaming** (`chat_stream`), which silently
+skips the tool loop and returns a bare `tool_calls` the client can't run. So the
+agent calls the model with **`agent.generate()`** (non-streaming), not
+`agent.stream()`. To still avoid the browser idle-timeout on long search turns,
+`/api/chat` keeps a **streamed NDJSON transport with a 15s heartbeat**
+(`agent/webserver.ts`): the heartbeat holds the browser connection open while
+`generate()` runs, then the full answer is sent as one chunk. Trade-off: no
+token-by-token typing in the UI (the typing indicator covers the wait).
+Ref: https://docs.getbifrost.ai/mcp/agent-mode
+
 ### ⚠️ Required gateway setup (Bifrost)
 - The **Tavily MCP server** must be registered in Bifrost with a `tavily_search`
   (and related) tool.

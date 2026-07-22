@@ -70,10 +70,19 @@ function isHistoryPoisonError(err: unknown): boolean {
 }
 
 /**
- * Stream the agent's reply for a session, emitting text deltas via onDelta.
+ * Produce the agent's reply for a session and emit it via onDelta.
+ *
+ * The model call is NON-STREAMING (`agent.generate()`), which is REQUIRED for
+ * the gateway's Bifrost MCP "agent mode": auto-execution of MCP tools (our
+ * Tavily web search) only runs on complete responses — it is incompatible with
+ * streaming (`chat_stream`), which silently skips the tool loop. See
+ * https://docs.getbifrost.ai/mcp/agent-mode. The browser connection is kept
+ * alive during the (silent) generate() by the heartbeat in streamingResponse;
+ * the full text is emitted as a single chunk when it resolves.
+ *
  * Keeps conversation memory + subscriber id aligned, and self-heals a poisoned
- * history by rotating to a fresh thread (only possible before the first delta,
- * which is where prompt-conversion errors occur). Resolves to the full text.
+ * history by rotating to a fresh thread (safe here: nothing is emitted until
+ * generate() resolves, so the retry never double-emits).
  */
 async function streamReply(
   agent: Agent,
@@ -82,40 +91,23 @@ async function streamReply(
   onDelta: (chunk: string) => void,
 ): Promise<string> {
   return requestContext.run({ userId: sessionId }, async () => {
-    let emitted = 0;
-    const counting = (c: string) => { emitted++; onDelta(c); };
+    const generateOn = async (thread: string): Promise<string> => {
+      const res = await agent.generate(prompt, { memory: { thread, resource: sessionId } });
+      return res.text;
+    };
     const firstThread = await chatThreadId(sessionId);
+    let text: string;
     try {
-      return await run2(agent, sessionId, prompt, firstThread, counting);
+      text = await generateOn(firstThread);
     } catch (err) {
-      // Prompt-conversion failures (poisoned history) throw before any delta —
-      // rotate to a fresh thread and retry once so the chat self-heals.
-      if (emitted === 0 && isHistoryPoisonError(err)) {
-        console.warn('[frontend] conversation history unusable; rotating to a fresh thread for', sessionId);
-        const fresh = await rotateChatThread(sessionId);
-        return await run2(agent, sessionId, prompt, fresh, counting);
-      }
-      throw err;
+      if (!isHistoryPoisonError(err)) throw err;
+      console.warn('[frontend] conversation history unusable; rotating to a fresh thread for', sessionId);
+      const fresh = await rotateChatThread(sessionId);
+      text = await generateOn(fresh);
     }
+    if (text) onDelta(text);
+    return text;
   });
-}
-
-/** One streaming attempt against a specific thread. */
-async function run2(
-  agent: Agent,
-  sessionId: string,
-  prompt: string,
-  thread: string,
-  onDelta: (chunk: string) => void,
-): Promise<string> {
-  const out = await agent.stream(prompt, { memory: { thread, resource: sessionId } });
-  let acc = '';
-  for await (const chunk of out.textStream as AsyncIterable<string>) {
-    acc += chunk;
-    onDelta(chunk);
-  }
-  try { await out.text; } catch { /* surfaced via loop */ }
-  return acc;
 }
 
 /**
