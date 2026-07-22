@@ -69,21 +69,98 @@ function isHistoryPoisonError(err: unknown): boolean {
   );
 }
 
-/** Run the agent for a session, keeping conversation memory and subscriber id aligned. */
-async function generate(agent: Agent, sessionId: string, prompt: string): Promise<string> {
+/**
+ * Stream the agent's reply for a session, emitting text deltas via onDelta.
+ * Keeps conversation memory + subscriber id aligned, and self-heals a poisoned
+ * history by rotating to a fresh thread (only possible before the first delta,
+ * which is where prompt-conversion errors occur). Resolves to the full text.
+ */
+async function streamReply(
+  agent: Agent,
+  sessionId: string,
+  prompt: string,
+  onDelta: (chunk: string) => void,
+): Promise<string> {
   return requestContext.run({ userId: sessionId }, async () => {
-    const thread = await chatThreadId(sessionId);
+    let emitted = 0;
+    const counting = (c: string) => { emitted++; onDelta(c); };
+    const firstThread = await chatThreadId(sessionId);
     try {
-      return (await agent.generate(prompt, { memory: { thread, resource: sessionId } })).text;
+      return await run2(agent, sessionId, prompt, firstThread, counting);
     } catch (err) {
-      if (!isHistoryPoisonError(err)) throw err;
-      // History can't be replayed — abandon it (persistently) and retry once on
-      // a fresh thread so the conversation self-heals instead of staying stuck.
-      console.warn('[frontend] conversation history unusable; rotating to a fresh thread for', sessionId);
-      const fresh = await rotateChatThread(sessionId);
-      return (await agent.generate(prompt, { memory: { thread: fresh, resource: sessionId } })).text;
+      // Prompt-conversion failures (poisoned history) throw before any delta —
+      // rotate to a fresh thread and retry once so the chat self-heals.
+      if (emitted === 0 && isHistoryPoisonError(err)) {
+        console.warn('[frontend] conversation history unusable; rotating to a fresh thread for', sessionId);
+        const fresh = await rotateChatThread(sessionId);
+        return await run2(agent, sessionId, prompt, fresh, counting);
+      }
+      throw err;
     }
   });
+}
+
+/** One streaming attempt against a specific thread. */
+async function run2(
+  agent: Agent,
+  sessionId: string,
+  prompt: string,
+  thread: string,
+  onDelta: (chunk: string) => void,
+): Promise<string> {
+  const out = await agent.stream(prompt, { memory: { thread, resource: sessionId } });
+  let acc = '';
+  for await (const chunk of out.textStream as AsyncIterable<string>) {
+    acc += chunk;
+    onDelta(chunk);
+  }
+  try { await out.text; } catch { /* surfaced via loop */ }
+  return acc;
+}
+
+/**
+ * Build a streamed NDJSON response that runs `producer` (which emits text
+ * deltas) while sending a heartbeat every 15s. This keeps bytes flowing during
+ * long, silent web-search turns so no idle-timeout (Bun or platform ingress)
+ * drops the connection. Each line is one JSON event:
+ *   {"t":"delta","v":"..."} | {"t":"ping"} | {"t":"done"} | {"t":"error","v":"..."}
+ */
+function streamingResponse(
+  session: { id: string; isNew: boolean },
+  producer: (onDelta: (chunk: string) => void) => Promise<string>,
+  onError: (err: unknown) => string,
+): Response {
+  const enc = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (obj: unknown) => {
+        try { controller.enqueue(enc.encode(JSON.stringify(obj) + '\n')); } catch { /* closed */ }
+      };
+      const heartbeat = setInterval(() => send({ t: 'ping' }), 15000);
+      try {
+        let sawDelta = false;
+        await producer((chunk) => { sawDelta = true; send({ t: 'delta', v: chunk }); });
+        void sawDelta;
+        send({ t: 'done' });
+      } catch (err) {
+        console.error('[frontend] stream producer failed:', err);
+        send({ t: 'error', v: onError(err) });
+      } finally {
+        clearInterval(heartbeat);
+        try { controller.close(); } catch { /* already closed */ }
+      }
+    },
+  });
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/x-ndjson; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    'X-Accel-Buffering': 'no', // ask proxies not to buffer, so heartbeats flush
+  };
+  if (session.isNew) {
+    headers['Set-Cookie'] =
+      `${SESSION_COOKIE}=${encodeURIComponent(session.id)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 365}`;
+  }
+  return new Response(body, { headers });
 }
 
 /** Start the frontend HTTP server. Call after the agent is constructed. */
@@ -92,7 +169,7 @@ export function startFrontend(agent: Agent): void {
 
   Bun.serve({
     port,
-    idleTimeout: 120, // allow long agentic (web-search) turns to complete
+    idleTimeout: 255, // max; the 15s heartbeat in streamingResponse keeps bytes flowing anyway
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
       const session = resolveSession(req);
@@ -112,18 +189,16 @@ export function startFrontend(agent: Agent): void {
         return new Response(INDEX_HTML, { headers });
       }
 
-      // Chat turn.
+      // Chat turn (streamed NDJSON so long web-search turns don't hit an idle timeout).
       if (req.method === 'POST' && url.pathname === '/api/chat') {
-        try {
-          const body = (await req.json()) as { message?: string };
-          const message = (body.message || '').trim();
-          if (!message) return json({ error: 'Empty message.' }, session, 400);
-          const reply = await generate(agent, session.id, message);
-          return json({ reply }, session);
-        } catch (err) {
-          console.error('[frontend] /api/chat failed:', err);
-          return json({ error: 'The agent could not respond. Please try again.' }, session, 500);
-        }
+        const body = (await req.json().catch(() => ({}))) as { message?: string };
+        const message = (body.message || '').trim();
+        if (!message) return json({ error: 'Empty message.' }, session, 400);
+        return streamingResponse(
+          session,
+          (onDelta) => streamReply(agent, session.id, message, onDelta),
+          () => 'The agent could not respond. Please try again.',
+        );
       }
 
       // PDF upload → extract text → onboard.
@@ -164,23 +239,15 @@ export function startFrontend(agent: Agent): void {
           `you captured, then continue onboarding by asking about my location.\n\n` +
           `<<<PROFILE\n${profileText}\nPROFILE>>>`;
 
-        // Step 2 — run the agent. A failure here is a model/config problem
-        // (e.g. missing ANTHROPIC_API_KEY), NOT a problem with the PDF — so say so.
-        try {
-          const reply = await generate(agent, session.id, prompt);
-          return json({ reply }, session);
-        } catch (err) {
-          console.error('[frontend] /api/upload generation failed:', err);
-          return json(
-            {
-              error:
-                "I read your PDF fine, but the agent couldn't respond — the model call failed " +
-                '(most often a missing/invalid ANTHROPIC_API_KEY, or a rate limit). Check the server logs and try again.',
-            },
-            session,
-            502,
-          );
-        }
+        // Step 2 — stream the agent's reply. A failure here is a model/config
+        // problem (e.g. missing ANTHROPIC_API_KEY), NOT a PDF problem — say so.
+        return streamingResponse(
+          session,
+          (onDelta) => streamReply(agent, session.id, prompt, onDelta),
+          () =>
+            "I read your PDF fine, but the agent couldn't respond — the model call failed " +
+            '(most often a missing/invalid ANTHROPIC_API_KEY, or a rate limit). Check the server logs and try again.',
+        );
       }
 
       // Email (Resend) configuration for the operator. The API key is never

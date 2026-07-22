@@ -2,7 +2,7 @@
   "name": "nextgig",
   "version": "0.1.0",
   "type": "module",
-  "description": "Describe what your agent does in one sentence.",
+  "description": "Personal job-hunting agent: LinkedIn/CV -> skill matrix -> emailed job-match digests.",
   "scripts": {
     "dev": "bun --watch agent/index.ts",
     "dev:ingest": "bun --watch ingestion/index.ts",
@@ -19,6 +19,7 @@
     "@opentelemetry/exporter-trace-otlp-proto": "latest",
     "@astropods/adapter-mastra": "latest",
     "@ai-sdk/anthropic": "latest",
+    "@ai-sdk/openai": "latest",
     "@libsql/client": "latest",
     "node-cron": "^3.0.3",
     "unpdf": "^0.12.1"
@@ -26,7 +27,6 @@
   "devDependencies": {
     "@types/bun": "^1.1.14",
     "@types/node-cron": "^3.0.11",
-    "@types/nodemailer": "^6.4.17",
     "typescript": "^5.9.3"
   }
 }

@@ -1,10 +1,10 @@
 /**
  * Tools the nextgig agent uses during onboarding and on demand.
  *
- * Web search itself is provided by Anthropic's native server-side web_search
- * tool (wired in agent/index.ts) — it reuses ANTHROPIC_API_KEY, so there is no
- * separate jobs-API key. These tools persist what the model learns and let the
- * user trigger an immediate digest.
+ * Web search itself is provided by the Astro AI Gateway's server-side MCP tool
+ * (Tavily), or by Anthropic's native web_search on the direct-Anthropic fallback
+ * — wired in agent/index.ts. These tools persist what the model learns and let
+ * the user trigger an immediate digest.
  */
 
 import { createTool } from '@mastra/core/tools';

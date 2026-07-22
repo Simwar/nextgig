@@ -42,8 +42,8 @@ necessary but **not sufficient** for real multi-user.
    from being handed (or guessing) another session id. Fine for personal use,
    unacceptable for real users' data.
 3. **The Settings endpoints are ungated** (`/api/email-config`, `/api/email-test`).
-4. **Cost is pooled.** Every user's job searches (Anthropic web search) and
-   emails (Resend) bill to your keys. One heavy or malicious user affects all.
+4. **Cost is pooled.** Every user's model + search calls (the Astro AI Gateway)
+   and emails (Resend) bill to your account. One heavy or malicious user affects all.
 5. **Scheduler fan-out.** The hourly tick already loops over *all* active
    subscriptions, so multi-user scheduling works — but it also means cost and
    rate-limit pressure scale with the number of users.

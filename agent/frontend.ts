@@ -333,23 +333,64 @@ export const INDEX_HTML = String.raw`<!doctype html>
 
   function setBusy(b) { busy = b; sendBtn.disabled = b; attachBtn.disabled = b; }
 
+  // Consume a streamed NDJSON response (see agent/webserver.ts). Shows the typing
+  // dots until the first delta, then converts to a bot bubble that grows as
+  // tokens stream in. Events: {t:'delta'|'ping'|'done'|'error', v?}.
+  async function consumeStream(resp, fallback) {
+    const typing = addTyping();
+    let bubble = null, acc = '';
+    function ensureBubble() {
+      if (bubble) return bubble;
+      typing.remove();
+      const wrap = addMsg('bot', '');
+      bubble = wrap.querySelector('.bubble');
+      return bubble;
+    }
+    function render() { ensureBubble().innerHTML = md(acc); main.scrollTop = main.scrollHeight; }
+
+    if (!resp.body) { typing.remove(); addMsg('bot', md(fallback)); return; }
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '', errMsg = null;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+          if (!line.trim()) continue;
+          let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
+          if (ev.t === 'delta') { acc += ev.v; render(); }
+          else if (ev.t === 'error') { errMsg = ev.v || fallback; }
+          // 'ping' and 'done' need no action
+        }
+      }
+    } catch (e) {
+      if (!acc) { typing.remove(); addMsg('bot', md('Network error - please try again.')); return; }
+      errMsg = errMsg || 'The connection dropped before the reply finished.';
+    }
+    if (errMsg && !acc) { typing.remove(); addMsg('bot', md(errMsg)); return; }
+    if (errMsg) { acc += '\n\n_' + errMsg + '_'; render(); return; }
+    if (!acc) { typing.remove(); addMsg('bot', md(fallback)); return; }
+    render();
+  }
+
   async function sendMessage(text) {
     if (busy || !text.trim()) return;
     hideHero();
     addMsg('user', esc(text));
     input.value = ''; autoGrow();
     setBusy(true);
-    const typing = addTyping();
     try {
       const r = await fetch('/api/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text }),
       });
-      const data = await r.json();
-      typing.remove();
-      addMsg('bot', md(data.reply || data.error || 'Something went wrong.'));
+      if (r.status === 400) { const d = await r.json().catch(() => ({})); addMsg('bot', md(d.error || 'Something went wrong.')); return; }
+      await consumeStream(r, 'Something went wrong.');
     } catch (e) {
-      typing.remove();
       addMsg('bot', md('Network error - please try again.'));
     } finally { setBusy(false); input.focus(); }
   }
@@ -360,16 +401,19 @@ export const INDEX_HTML = String.raw`<!doctype html>
     hideHero();
     addMsg('user', '<span class="attach">' + ICON_CLIP + ' <b>' + esc(file.name) + '</b></span>');
     setBusy(true);
-    const typing = addTyping();
     try {
       const fd = new FormData();
       fd.append('pdf', file);
       const r = await fetch('/api/upload', { method: 'POST', body: fd });
-      const data = await r.json();
-      typing.remove();
-      addMsg('bot', md(data.reply || data.error || 'Could not read that PDF.'));
+      // Non-stream JSON errors (bad/empty/too-large PDF) come back as 400/500.
+      const ct = r.headers.get('Content-Type') || '';
+      if (ct.indexOf('application/x-ndjson') === -1) {
+        const d = await r.json().catch(() => ({}));
+        addMsg('bot', md(d.error || 'Could not read that PDF.'));
+        return;
+      }
+      await consumeStream(r, 'Could not read that PDF.');
     } catch (e) {
-      typing.remove();
       addMsg('bot', md('Upload failed - please try again.'));
     } finally { setBusy(false); input.focus(); }
   }

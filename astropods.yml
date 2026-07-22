@@ -7,6 +7,11 @@ agent:
   build:
     context: .
     dockerfile: Dockerfile
+  # Astro AI Gateway: injects ASTRO_GATEWAY_URL + ASTRO_GATEWAY_API_KEY (managed
+  # per-tenant key, no provider key to bring). The model runs through the gateway
+  # (OpenAI-compat) and job search is the gateway's server-side MCP `web_search`
+  # tool (executed gateway-side by Bifrost). See docs/ai-gateway.md.
+  astro_ai_gateway: true
   # Custom chat frontend on port 80 (agent/webserver.ts). No messaging sidecar:
   # the frontend and scheduler drive the agent in-process via agent.generate().
   interfaces:
@@ -26,9 +31,9 @@ agent:
       optional: true
       description: 'From address, e.g. "NextGig <jobs@yourdomain.com>". Defaults to onboarding@resend.dev (verify a domain in Resend to email arbitrary recipients).'
 
-models:
-  anthropic:
-    provider: anthropic
+# No `models:` block — the gateway provides the model (zero provider keys).
+# For local dev WITHOUT the gateway, set ANTHROPIC_API_KEY and the agent falls
+# back to direct Anthropic (with native web_search) automatically.
 
 dev:
   interfaces:

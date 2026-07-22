@@ -13,7 +13,7 @@ capabilities:
   - "Email daily or weekly job-match digests via Resend, de-duplicated across runs"
   - "Search and preview matches on demand from the chat UI"
 integrations:
-  - "Anthropic"
+  - "Astro AI Gateway"
   - "Resend"
 ---
 
@@ -33,7 +33,7 @@ NextGig is a chat agent with a small web frontend. Onboarding is conversational 
 
 From then on, a built-in scheduler does the hunting:
 
-- **Finds matches** with Anthropic's native web search, biased toward real postings on applicant-tracking systems (Greenhouse, Lever, Ashby) and company career pages rather than aggregator homepages.
+- **Finds matches** via the Astro AI Gateway's server-side web search (Tavily MCP), biased toward real postings on applicant-tracking systems (Greenhouse, Lever, Ashby) and company career pages rather than aggregator homepages.
 - **De-duplicates** against everything already emailed to you, so a digest never repeats a role you've seen.
 - **Verifies links are live** — each candidate URL is opened and dropped if it 404s or the page says the role is expired/filled (conservative: network errors and bot-blocks are kept, never over-pruned).
 - **Emails only what's new**, and skips the email entirely when there's nothing new to send.
@@ -51,7 +51,8 @@ Everything except the scheduled emails works without any email setup — you can
 
 | Variable | Purpose | Required |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Model + native web search | Yes |
+| `ASTRO_GATEWAY_URL` / `ASTRO_GATEWAY_API_KEY` | Model + web search via the gateway (injected by `astro_ai_gateway: true`) | Yes |
+| `ANTHROPIC_API_KEY` | Fallback model + native web search (local dev without the gateway) | No |
 | `RESEND_API_KEY` | Email delivery (or set it in-app via the Settings panel) | For email digests |
 | `RESEND_FROM` | Sender address; defaults to `onboarding@resend.dev` | No |
 

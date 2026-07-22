@@ -265,7 +265,7 @@ function buildDigestPrompt(sub: Subscription, recent: SentJobRecord[]): string {
 
   return [
     'You are finding NEW job postings for a candidate and returning them as JSON.',
-    'Use the web_search tool to find REAL, currently-open postings.',
+    'Use the available web search tool to find REAL, currently-open postings.',
     '',
     'Candidate profile:',
     `- Target titles: ${titles}`,

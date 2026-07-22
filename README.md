@@ -59,7 +59,9 @@ nextgig/
 2. **Scheduled digests:** an in-process scheduler wakes hourly, finds subscriptions whose cadence has elapsed, searches the web for matching open roles, **de-duplicates against everything already emailed to that subscriber, verifies each candidate link is a live posting (drops 404/expired/filled pages), and emails only the new, live roles** via Resend (skipping the email entirely when nothing is new). Link verification is conservative — network errors / bot-blocks are kept, never over-pruned — and can be disabled with `NEXTGIG_VERIFY_LINKS=0`. Every run is logged to the `digest_runs` table.
 3. **On demand:** "send me one now" runs an immediate search and email; the agent can also discuss matches directly in chat.
 
-LinkedIn is never scraped — the user pastes their profile. Job search uses Anthropic's **native web search** (reuses `ANTHROPIC_API_KEY`, no jobs-API key).
+LinkedIn is never scraped — the user pastes their profile. The **model and web
+search both run through the Astro AI Gateway** (no provider key to bring); see
+[`docs/ai-gateway.md`](docs/ai-gateway.md).
 
 ## Configuration
 
@@ -69,9 +71,18 @@ The agent is configured in `astropods.yml`. Key sections:
 
 | Integration | Type | Environment variable | Required |
 |------------|------|---------------------|----------|
-| Anthropic | Model API + web search & fetch | `ANTHROPIC_API_KEY` | yes |
+| Astro AI Gateway | Model + web search (via gateway MCP) | `ASTRO_GATEWAY_URL`, `ASTRO_GATEWAY_API_KEY` (injected by `astro_ai_gateway: true`) | yes |
+| Anthropic (fallback) | Model + native web search, local dev only | `ANTHROPIC_API_KEY` | no |
 | Resend | Email delivery | `RESEND_API_KEY` | for notifications |
 | Resend (optional) | From address | `RESEND_FROM` | no (defaults to `onboarding@resend.dev`) |
+
+**Model + search:** `agent.astro_ai_gateway: true` gives the agent a managed
+per-tenant key — no provider key required. The model runs on the gateway's
+OpenAI-compatible endpoint; job search is the gateway's server-side **Tavily
+MCP** tool (executed gateway-side by Bifrost). The gateway's virtual key must be
+granted access to that MCP server in Bifrost, or no search tools are injected.
+Without the gateway (plain local `bun` run), set `ANTHROPIC_API_KEY` and the
+agent falls back to direct Anthropic with native web search.
 
 ### Email (Resend) setup
 
