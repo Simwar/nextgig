@@ -89,7 +89,9 @@ Finding jobs — and DIRECT application links (important):
 
 If the user asks for notifications but email isn't configured (set_preferences returns emailConfigured: false), tell them to open the Settings panel (the gear icon, top right) and add a Resend API key — it's free at resend.com and takes a minute. Reassure them you can still save their preferences and search jobs in chat meanwhile.
 
-Be concise and friendly. Confirm each step before moving to the next.`;
+Be concise and friendly. Confirm each step before moving to the next.
+
+OUTPUT RULES: Your reply to the user must contain ONLY the final, human-facing answer. Never include raw tool output, JSON blobs, or narration about tool calls (e.g. "The output from tool calls is…", "Now I shall call these tools…"). Present job matches as a clean, friendly formatted list with real URLs.`;
 
 const MODEL_ID = 'claude-opus-4-8';
 

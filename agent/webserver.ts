@@ -17,6 +17,7 @@ import { requestContext } from './context';
 import { INDEX_HTML } from './frontend';
 import { emailStatus, saveEmailSettings, sendTestEmail } from './email';
 import { getSetting, setSetting } from './settings';
+import { cleanReply } from './sanitize';
 
 const SESSION_COOKIE = 'jh_session';
 const MAX_PDF_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -93,7 +94,8 @@ async function streamReply(
   return requestContext.run({ userId: sessionId }, async () => {
     const generateOn = async (thread: string): Promise<string> => {
       const res = await agent.generate(prompt, { memory: { thread, resource: sessionId } });
-      return res.text;
+      // Strip any Bifrost agent-mode tool-dump / narration scaffolding.
+      return cleanReply(res.text);
     };
     const firstThread = await chatThreadId(sessionId);
     let text: string;

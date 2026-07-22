@@ -23,6 +23,7 @@ import {
   type SentJobRecord,
 } from './db';
 import { sendEmail, isEmailConfigured } from './email';
+import { cleanReply } from './sanitize';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // How far back to remember sent jobs for de-duplication, and the cap on how
@@ -170,18 +171,21 @@ export async function runDigest(
       },
     });
 
-    const parsed = parseJobs(result.text);
+    // Strip any Bifrost agent-mode tool-dump / narration scaffolding before
+    // parsing (a leaked tool JSON dump would otherwise break parseJobs).
+    const replyText = cleanReply(result.text);
+    const parsed = parseJobs(replyText);
 
     // Fallback: model didn't return clean JSON. Best-effort — send the raw text
     // once, recording URL fingerprints so we still de-dupe next time.
     if (parsed === null) {
-      const fresh = extractUrls(result.text).filter((u) => !seen.has('u:' + normUrl(u)));
+      const fresh = extractUrls(replyText).filter((u) => !seen.has('u:' + normUrl(u)));
       if (fresh.length === 0) {
         await logDigestRun(sub.id, now, 0, 0, false);
         await markNotified(sub.id, now);
         return { sent: false, foundCount: 0, newCount: 0, body: '' };
       }
-      const body = result.text.trim();
+      const body = replyText.trim();
       await sendEmail({ to: sub.email, subject: digestSubject(sub, fresh.length), text: body });
       await recordSentJobs(sub.id, fresh.map((u) => ({ fingerprint: 'u:' + normUrl(u), url: u, title: '', company: '' })), now);
       await logDigestRun(sub.id, now, fresh.length, fresh.length, true);
