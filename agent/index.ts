@@ -3,37 +3,60 @@
  * captures their location and notification preferences, and emails scheduled
  * job-match digests found via web search.
  *
- * This agent uses Mastra's Agent class with the Astro adapter to connect
- * to the Astro messaging service via gRPC.
+ * Built on Mastra's Agent class. There is no messaging sidecar: the custom
+ * frontend (agent/webserver.ts) and the digest scheduler (agent/scheduler.ts)
+ * drive the agent in-process via agent.generate().
  *
- * Environment variables (automatically injected by 'astro dev'):
- *   ANTHROPIC_API_KEY - injected by anthropic model; also powers web search
- *   GRPC_SERVER_ADDR  - injected by Astro messaging service
- *   SMTP_USER/SMTP_PASS/SMTP_HOST/SMTP_PORT/SMTP_FROM - email delivery
+ * Environment variables (automatically injected by 'ast project start' / deploy):
+ *   ASTRO_GATEWAY_URL     - Astro AI Gateway base URL
+ *   ASTRO_GATEWAY_API_KEY - managed per-tenant gateway credential (no provider key)
+ *   MODEL_DEFAULT         - model selected from astropods.yml models.default.models
+ *   POSTGRES_HOST / PORT / USER / PASSWORD / DB - the `db` knowledge store
+ *   RESEND_API_KEY / RESEND_FROM - email delivery (optional; also settable in-app)
  */
 
 import { Agent } from '@mastra/core/agent';
 import { Mastra } from '@mastra/core/mastra';
 import { Memory } from '@mastra/memory';
-import { LibSQLStore } from '@mastra/libsql';
+import { PostgresStore } from '@mastra/pg';
 import { Observability } from '@mastra/observability';
 import { OtelExporter } from '@mastra/otel-exporter';
-import { anthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
-import { dbUrl } from './storage';
+import { ensureDatabase, hasPgCredentials, pgPool } from './storage';
 import { tools } from './tools';
 import { initScheduler } from './scheduler';
 import { startFrontend } from './webserver';
 
-// File-backed storage so the skill matrix, preferences, and agent memory
-// survive restarts and are visible to the scheduler. Falls back to in-memory
-// only when NEXTGIG_IN_MEMORY=1.
-const memory = new Memory({
-  storage: new LibSQLStore({
-    id: 'memory',
-    url: dbUrl(),
-  }),
+if (!hasPgCredentials()) {
+  console.error(
+    '[db] POSTGRES_HOST / POSTGRES_PASSWORD are not set — the Postgres knowledge ' +
+      'store declared in astropods.yml provides them. Run the agent through ' +
+      '`ast project start` (or a deploy), or point the POSTGRES_* vars at your own ' +
+      'database. Falling back to localhost:5432.',
+  );
+}
+
+// Connect (and create the database if the store's volume predates this agent)
+// BEFORE anything opens a pool, so a misconfigured store is one clear log line
+// rather than an unhandled rejection from inside a library's lazy init.
+if (!(await ensureDatabase())) {
+  console.error(
+    '[db] continuing without a working database — chat and digests will fail ' +
+      'until POSTGRES_* points at a reachable Postgres.',
+  );
+}
+
+// One store for everything Mastra persists — conversation memory plus Mastra's
+// own bookkeeping (threads, traces, workflow snapshots) — in the same Postgres
+// knowledge store as the skill matrix, preferences, and application history. So
+// a restart or redeploy keeps both the data and the chat context. Sharing our
+// pool keeps the connection count low (see agent/storage.ts).
+const storage = new PostgresStore({
+  id: 'nextgig',
+  pool: pgPool(),
 });
+
+const memory = new Memory({ storage });
 
 function resolveOtlpTracesEndpoint(): string {
   const raw = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://localhost:4318';
@@ -78,14 +101,30 @@ Onboard a new user in this order, one step at a time, conversationally:
 
 After onboarding, you can:
 - Run an immediate search and email it with send_digest_now (e.g. "send me one now" or to preview). Scheduled and on-demand digests only include NEW roles the user hasn't been emailed before, so if send_digest_now reports no new matches, tell the user their last digest already covered what's currently out there and you'll email as soon as fresh roles appear.
-- Search and discuss matching jobs directly in chat using the available web search tool, applying the saved skills and location.
+- Search and discuss matching jobs directly in chat with web_search, applying the saved skills and location.
+- Keep track of what they applied to (see APPLICATIONS below).
 - Update any saved detail when the user asks (re-call save_profile or set_preferences).
 
+APPLICATIONS. You keep the user's application history, so they never have to remember what they sent off:
+- When they say they applied to something — "I applied to the SumUp one", "applied to #2", "just sent my CV to Wolt" — call mark_applied with the URL, title and company exactly as you presented them. Confirm in one short line, and mention how many applications they now have if it's a round number worth noting.
+- Work out which posting they mean from the conversation. If it's ambiguous, or the role was never in this conversation, ask which one rather than guessing — never invent a URL to record.
+- When they report an outcome — "I have an interview with Wolt", "Talon.One rejected me", "I got an offer", "I withdrew" — call mark_applied again with the same URL and the new status (interviewing / offer / rejected / withdrawn). Put anything else they mention (recruiter name, salary, next step, date) in notes.
+- When they ask what they applied to, how many, or where things stand, call list_applications and lay it out clearly: newest first, title and company, the status, when they applied, and the link. If a status other than "applied" is set, show it. If they have none yet, say so and tell them to just mention it whenever they apply.
+- Before presenting new matches, if the user has applications on file, don't re-offer a role they already applied to — call list_applications when you're unsure.
+
+Your tools for this: web_search (finds postings; runs server-side, you just ask) and web_fetch (opens one URL and reports what is actually on it).
+
 Finding jobs — and DIRECT application links (important):
-- Use the available web search tool to find candidate postings that match the target titles, skills, location, and remote preference. Prefer recent, currently-open roles.
+- Use web_search to find candidate postings that match the target titles, skills, location, and remote preference. Prefer recent, currently-open roles.
 - Bias searches toward individual postings on applicant-tracking systems, which have direct apply links — e.g. add terms like site:boards.greenhouse.io, site:jobs.lever.co, site:jobs.ashbyhq.com, site:*.workday.com/*/job, or the company's own /careers pages — rather than only aggregator homepages.
-- For every posting you present, include the exact URL returned by the search tool (verbatim). Do NOT paraphrase a posting to a site homepage, and NEVER hand-type or guess a URL. If you could only find a board/search page and not a per-role apply link, say so plainly and give the specific URL you actually retrieved — do not pretend it is a direct link.
-- Respect the user's remote preference. Only report jobs you actually found via web search.
+- For every posting you present, include the exact URL returned by the search tool (verbatim), and keep the source title alongside it. Do NOT paraphrase a posting to a site homepage, and NEVER hand-type or guess a URL. If you could only find a board/search page and not a per-role apply link, say so plainly and give the specific URL you actually retrieved — do not pretend it is a direct link.
+- Search results come from a web index that can lag, so before you present a shortlist, call web_fetch on each URL you plan to show, ALWAYS passing expectedTitle and expectedCompany (they run one at a time, so keep the list to about 5). Use the page text to confirm the location and remote status, or to pick up the real apply link from a listing page.
+- Then report each posting according to what web_fetch said, not according to the status code:
+  - postingGone: true — drop it silently, do not mention it.
+  - contentConfirmed: true — present it normally.
+  - contentConfirmed: false — you may still present it (browser-rendered boards like Ashby and Workday can never be confirmed this way), but you MUST say in one short clause that you could not confirm it, e.g. "couldn't open the page to verify". Read the confirmation field: if it says the page does not mention the expected title, the link most likely redirects to a generic careers page, so present it as a board link rather than as that role's apply link.
+- Never describe a posting as verified, confirmed, or checked unless its web_fetch result had contentConfirmed: true.
+- Respect the user's remote preference. Only report jobs you actually found via web_search.
 
 If the user asks for notifications but email isn't configured (set_preferences returns emailConfigured: false), tell them to open the Settings panel (the gear icon, top right) and add a Resend API key — it's free at resend.com and takes a minute. Reassure them you can still save their preferences and search jobs in chat meanwhile.
 
@@ -93,65 +132,90 @@ Be concise and friendly. Confirm each step before moving to the next.
 
 OUTPUT RULES: Your reply to the user must contain ONLY the final, human-facing answer. Never include raw tool output, JSON blobs, or narration about tool calls (e.g. "The output from tool calls is…", "Now I shall call these tools…"). Present job matches as a clean, friendly formatted list with real URLs.`;
 
-const MODEL_ID = 'claude-opus-4-8';
-
-// Is the Astro AI Gateway available? (astro_ai_gateway: true injects these.)
-const ON_GATEWAY = Boolean(process.env.ASTRO_GATEWAY_URL && process.env.ASTRO_GATEWAY_API_KEY);
-
 /**
- * Model provider selection.
+ * Model + search: the Astro AI Gateway, no provider API key.
  *
- * - **Astro AI Gateway (default in prod / `ast dev`).** OpenAI-compatible
- *   endpoint at `${ASTRO_GATEWAY_URL}/v1` with the managed per-tenant key — no
- *   provider key to bring. Web search is provided by the gateway's server-side
- *   MCP tool (Tavily), which Bifrost injects and executes gateway-side, so we
- *   do NOT declare a search tool client-side here.
- *   ⚠️ The deployment's gateway virtual key must be granted access to the
- *   Tavily MCP server in Bifrost, or no search tools are injected.
- * - **Direct Anthropic (fallback).** If the gateway env vars are absent (e.g.
- *   local dev without `ast dev`), fall back to `ANTHROPIC_API_KEY` and attach
- *   Anthropic's native server-side `web_search` tool.
+ * `models.default.provider: gateway` in astropods.yml makes the platform inject
+ * ASTRO_GATEWAY_URL + ASTRO_GATEWAY_API_KEY (a managed per-tenant credential)
+ * and the selected model id as MODEL_DEFAULT. The gateway speaks the
+ * OpenAI-compatible API, so @ai-sdk/openai points straight at it.
  */
-function selectModel() {
-  if (ON_GATEWAY) {
-    const gateway = createOpenAI({
-      baseURL: process.env.ASTRO_GATEWAY_URL!.replace(/\/+$/, '') + '/v1',
-      apiKey: process.env.ASTRO_GATEWAY_API_KEY!,
-    });
-    console.log('[model] Astro AI Gateway (OpenAI-compat):', MODEL_ID);
-    // .chat() → /v1/chat/completions. The bare gateway(MODEL_ID) call would use
-    // the OpenAI Responses API (/v1/responses), which the gateway does not serve
-    // (→ 403). The gateway only speaks Chat Completions.
-    return gateway.chat(MODEL_ID);
-  }
-  console.log('[model] direct Anthropic:', MODEL_ID);
-  return anthropic(MODEL_ID);
+const GATEWAY_URL = (process.env.ASTRO_GATEWAY_URL ?? '').replace(/\/+$/, '');
+const GATEWAY_KEY = process.env.ASTRO_GATEWAY_API_KEY ?? '';
+
+if (!GATEWAY_URL || !GATEWAY_KEY) {
+  console.error(
+    '[model] ASTRO_GATEWAY_URL / ASTRO_GATEWAY_API_KEY are not set — every model ' +
+      'call will fail. Run the agent through `ast project start` (or a deploy), ' +
+      'which injects the gateway credentials.',
+  );
 }
 
-// On the gateway, search is the gateway-side MCP `tavily_*` toolset (injected +
-// executed by Bifrost) — nothing to declare here. On the direct fallback, use
-// Anthropic's native server-side web_search.
-//
-// web_fetch is intentionally NOT enabled on the fallback: @ai-sdk/anthropic v4
-// cannot serialize its error results (web_fetch_tool_result_error) back into a
-// prompt, which poisons the conversation. Link liveness is verified in code
-// instead — see agent/scheduler.ts -> isLivePosting.
-const searchTool: Record<string, ReturnType<typeof anthropic.tools.webSearch_20250305>> =
-  ON_GATEWAY ? {} : { web_search: anthropic.tools.webSearch_20250305({ maxUses: 8 }) };
+const gateway = createOpenAI({
+  apiKey: GATEWAY_KEY,
+  baseURL: `${GATEWAY_URL}/v1`,
+});
+
+// Chosen at deploy time from astropods.yml -> models.default.models.
+// Web search requires one of the GPT-5.x models (gpt-5-4, gpt-5-5, gpt-5-6-luna,
+// gpt-5-6-sol, gpt-5-6-terra).
+const MODEL_ID = process.env.MODEL_DEFAULT ?? 'gpt-5-6-luna';
+console.log('[model] Astro AI Gateway:', MODEL_ID);
+
+/**
+ * Web search is a SERVER-SIDE tool: the model decides on its own when a question
+ * needs current information, the search runs inside the gateway (Bedrock), and
+ * the answer comes back grounded with url_citation annotations. Nothing here
+ * executes client-side, and no search API key is involved.
+ *
+ * externalWebAccess MUST stay false. It maps to external_web_access, which
+ * defaults to TRUE, and the gateway role is deliberately not granted
+ * bedrock-websearch:ExternalWebAccess — leaving the default returns a 403 on the
+ * authorization check. false serves retrieval from the Bedrock web index and
+ * cache, so request data stays inside the AWS boundary. Live page reads are done
+ * by the client-side `web_fetch` tool instead (agent/tools.ts).
+ *
+ * Mastra's ToolsInput wants a ProviderDefinedTool carrying an `id`; the AI SDK
+ * factory does not surface one in its type, so it is added explicitly.
+ * 'openai.web_search' is the id Mastra itself uses (WebSearchProviderToolId).
+ */
+const webSearchTool = {
+  ...gateway.tools.webSearch({ externalWebAccess: false }),
+  id: 'openai.web_search',
+};
 
 const agent = new Agent({
   id: 'nextgig',
   name: 'NextGig',
   instructions: INSTRUCTIONS,
-  model: selectModel(),
+  // Bare gateway(MODEL_ID) targets the OpenAI Responses API (/v1/responses),
+  // which is what carries the server-side web_search tool. (Do not switch to
+  // gateway.chat() — Chat Completions cannot express provider-executed tools.)
+  model: gateway(MODEL_ID),
   memory,
   tools: {
     ...tools,
-    ...searchTool,
+    web_search: webSearchTool,
   },
-  // Ensure traces include stable Astro metadata by default.
-  // The collector endpoint is injected by `ast dev`.
   defaultOptions: {
+    // A job-search turn is tool-hungry: several web_search rounds, then a
+    // web_fetch per candidate, and only then the answer. Mastra's default budget
+    // is far smaller, and running out mid-loop ends the turn after a tool call
+    // with NO text — which the frontend can only render as an error. Keep this
+    // comfortably above a realistic sweep.
+    maxSteps: 15,
+    // store: false is REQUIRED on this gateway. The Responses API normally lets a
+    // client re-send prior turns as `item_reference` ids, and the AI SDK does that
+    // whenever store is true (its default) — but the gateway is stateless and
+    // silently drops those references. For a client-side tool call that means the
+    // follow-up request carries a function_call_output whose function_call is gone,
+    // and the gateway rejects it: 400 "No tool call found for function call output
+    // with call_id …". With store: false the SDK inlines the real items instead.
+    // (Provider-executed web_search *results* are not replayed either way — the
+    // model's own summary of them is, which is what later steps actually need.)
+    providerOptions: { openai: { store: false } },
+    // Ensure traces include stable Astro metadata by default.
+    // The collector endpoint is injected by `ast dev`.
     tracingOptions: {
       tags: ['astro', 'agent:nextgig'],
       metadata: {
@@ -168,6 +232,7 @@ new Mastra({
   agents: {
     'nextgig': agent,
   },
+  storage,
   observability,
 });
 

@@ -5,6 +5,7 @@
 
 # Astro
 .ast/
+.ast-preview/
 
 # Dependencies
 node_modules/
@@ -12,7 +13,7 @@ node_modules/
 # Build
 dist/
 
-# Local data (file-backed LibSQL: subscriptions + agent memory)
+# Local data (legacy file-backed db; state now lives in the Postgres store)
 data/
 
 # IDE

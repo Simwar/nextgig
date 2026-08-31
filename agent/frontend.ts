@@ -90,7 +90,10 @@ export const INDEX_HTML = String.raw`<!doctype html>
   .msg.user .bubble a { color: #fff; text-decoration: underline; }
   .bubble .md-h { font-weight: 800; margin: 8px 0 4px; }
 
-  .typing .bubble { color: var(--muted); }
+  .typing .bubble { color: var(--muted); display: flex; align-items: center; gap: 9px; }
+  .typing .status { font-size: 13.5px; }
+  .typing .elapsed { font-size: 12px; opacity: .55; font-variant-numeric: tabular-nums; }
+  .dots { display: inline-flex; flex: none; }
   .dots span {
     display: inline-block; width: 7px; height: 7px; margin: 0 2px; border-radius: 50%;
     background: var(--grad); animation: blink 1.2s infinite both;
@@ -201,6 +204,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
       <div class="chips">
         <button class="chip" id="chip-upload"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg> Upload PDF</button>
         <button class="chip" id="chip-paste">Paste my profile</button>
+        <button class="chip" id="chip-applied">What have I applied to?</button>
         <button class="chip" id="chip-help">What can you do?</button>
       </div>
     </div>
@@ -321,21 +325,42 @@ export const INDEX_HTML = String.raw`<!doctype html>
     return wrap;
   }
 
+  // The typing bubble is the only feedback during a long turn (a job search can
+  // run for a minute of silent tool calls), so it carries a status label the
+  // server updates plus an always-ticking elapsed counter.
   function addTyping() {
     const wrap = document.createElement('div');
     wrap.className = 'msg bot typing';
     wrap.innerHTML = '<div class="avatar">' + ICON_BOT + '</div>' +
-      '<div class="bubble dots"><span></span><span></span><span></span></div>';
+      '<div class="bubble">' +
+        '<span class="dots"><span></span><span></span><span></span></span>' +
+        '<span class="status">Thinking...</span>' +
+        '<span class="elapsed"></span>' +
+      '</div>';
     chat.appendChild(wrap);
     main.scrollTop = main.scrollHeight;
-    return wrap;
+
+    const statusEl = wrap.querySelector('.status');
+    const elapsedEl = wrap.querySelector('.elapsed');
+    const started = Date.now();
+    const tick = () => {
+      const secs = Math.round((Date.now() - started) / 1000);
+      elapsedEl.textContent = secs >= 3 ? secs + 's' : '';
+    };
+    const timer = setInterval(tick, 1000);
+    return {
+      el: wrap,
+      setStatus(text) { if (text) statusEl.textContent = text; },
+      remove() { clearInterval(timer); wrap.remove(); },
+    };
   }
 
   function setBusy(b) { busy = b; sendBtn.disabled = b; attachBtn.disabled = b; }
 
   // Consume a streamed NDJSON response (see agent/webserver.ts). Shows the typing
-  // dots until the first delta, then converts to a bot bubble that grows as
-  // tokens stream in. Events: {t:'delta'|'ping'|'done'|'error', v?}.
+  // bubble — dots, a server-driven status label, and an elapsed counter — until
+  // the first delta, then converts to a bot bubble that grows as text arrives.
+  // Events: {t:'delta'|'status'|'ping'|'done'|'error', v?}.
   async function consumeStream(resp, fallback) {
     const typing = addTyping();
     let bubble = null, acc = '';
@@ -363,6 +388,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
           if (!line.trim()) continue;
           let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
           if (ev.t === 'delta') { acc += ev.v; render(); }
+          else if (ev.t === 'status') { typing.setStatus(ev.v); }
           else if (ev.t === 'error') { errMsg = ev.v || fallback; }
           // 'ping' and 'done' need no action
         }
@@ -434,6 +460,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
   // Hero quick-start chips
   document.getElementById('chip-upload').addEventListener('click', () => fileInput.click());
   document.getElementById('chip-paste').addEventListener('click', () => { input.focus(); });
+  document.getElementById('chip-applied').addEventListener('click', () => sendMessage('What have I applied to?'));
   document.getElementById('chip-help').addEventListener('click', () => sendMessage('What can you do?'));
 
   // Drag & drop

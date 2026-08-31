@@ -7,11 +7,6 @@ agent:
   build:
     context: .
     dockerfile: Dockerfile
-  # Astro AI Gateway: injects ASTRO_GATEWAY_URL + ASTRO_GATEWAY_API_KEY (managed
-  # per-tenant key, no provider key to bring). The model runs through the gateway
-  # (OpenAI-compat) and job search is the gateway's server-side MCP `web_search`
-  # tool (executed gateway-side by Bifrost). See docs/ai-gateway.md.
-  astro_ai_gateway: true
   # Custom chat frontend on port 80 (agent/webserver.ts). No messaging sidecar:
   # the frontend and scheduler drive the agent in-process via agent.generate().
   interfaces:
@@ -19,7 +14,7 @@ agent:
   inputs:
     # Email delivery for scheduled job-match digests, via Resend.
     # Optional — email can also be configured at runtime from the app's ⚙ Settings
-    # panel (stored in ./data). This env var, when set, takes precedence.
+    # panel (stored in the db knowledge store). This env var, when set, takes precedence.
     - name: RESEND_API_KEY
       datatype: string
       secret: true
@@ -31,9 +26,25 @@ agent:
       optional: true
       description: 'From address, e.g. "NextGig <jobs@yourdomain.com>". Defaults to onboarding@resend.dev (verify a domain in Resend to email arbitrary recipients).'
 
-# No `models:` block — the gateway provides the model (zero provider keys).
-# For local dev WITHOUT the gateway, set ANTHROPIC_API_KEY and the agent falls
-# back to direct Anthropic (with native web_search) automatically.
+models:
+  # Astro AI Gateway — managed model access, no provider API key to bring.
+  # The platform injects ASTRO_GATEWAY_URL + ASTRO_GATEWAY_API_KEY at runtime and
+  # the model picked from the list below is injected as MODEL_DEFAULT.
+  # Web search (with page open/fetch) is the gateway's server-side web_search
+  # tool, which needs one of the GPT-5.x models. See docs/ai-gateway.md.
+  default:
+    provider: gateway
+    models: [gpt-5-6-luna]
+
+knowledge:
+  # Postgres sidecar, deployed alongside the agent. Provider-mode entries always
+  # get a persistent volume, so the skill matrix, preferences, application
+  # history, and chat memory survive a restart or redeploy — the agent's own
+  # container filesystem does not (there is no volume option for the agent).
+  # The platform generates a managed user + random password and injects
+  # POSTGRES_HOST / PORT / USER / PASSWORD / DB (see agent/storage.ts).
+  db:
+    provider: postgres
 
 dev:
   interfaces:

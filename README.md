@@ -13,8 +13,8 @@ Builds a skill matrix from a user's pasted LinkedIn profile (or uploaded PDF/CV)
 > - **Email settings are deployment-global.** The Resend API key / sender set in
 >   the in-app Settings panel are shared across everyone using that deployment —
 >   one visitor can change the sender for all.
-> - **Cost is pooled.** Every job search (Anthropic) and every email (Resend)
->   bills to *your* keys.
+> - **Cost is pooled.** Every job search (your Astro AI Gateway account) and
+>   every email (Resend) bills to *you*.
 >
 > **Deploy it privately** (keep the URL to yourself, or put it behind your
 > platform's access control). If you want to run it for multiple real users, read
@@ -25,11 +25,21 @@ Builds a skill matrix from a user's pasted LinkedIn profile (or uploaded PDF/CV)
 ## Quick start
 
 ```bash
+# Authenticate — the AI gateway and the Postgres store are account-scoped
+ast login
+
 # Install dependencies
 bun install
 
-# Start the agent locally
-ast dev
+# Start the agent locally (agent on :3200, plus a Postgres sidecar)
+ast project start
+```
+
+Then deploy it:
+
+```bash
+ast push --visibility public
+ast deploy nextgig --wait
 ```
 
 ## Project structure
@@ -37,18 +47,20 @@ ast dev
 ```
 nextgig/
 ├── agent/
-│   ├── index.ts          # Agent entry point (model + web search, scheduler, frontend, serve)
+│   ├── index.ts          # Agent entry point (gateway model + web_search, scheduler, frontend)
 │   ├── webserver.ts      # custom chat + PDF-upload frontend (Bun.serve on port 80)
 │   ├── frontend.ts       # single-page chat UI (inlined HTML)
-│   ├── tools.ts          # save_profile / set_preferences / get_profile / send_digest_now
+│   ├── tools.ts          # save_profile / set_preferences / get_profile / send_digest_now /
+│   │                     #   web_fetch / mark_applied / list_applications
+│   ├── fetchpage.ts      # shared live page fetch (web_fetch tool + link verification)
 │   ├── scheduler.ts      # in-process node-cron digest loop
 │   ├── email.ts          # Resend email delivery (via fetch)
-│   ├── settings.ts       # runtime settings (Resend key/from) in ./data
-│   ├── db.ts             # file-backed LibSQL subscription store
-│   ├── storage.ts        # shared db path resolution
+│   ├── settings.ts       # runtime settings (Resend key/from) in the settings table
+│   ├── db.ts             # Postgres store (subscriptions, sent_jobs, applications, …)
+│   ├── storage.ts        # Postgres connection settings + shared pool
 │   └── context.ts        # per-conversation subscriber identity
 ├── astropods.yml         # Agent specification
-├── Dockerfile            # Agent container (pre-creates writable ./data)
+├── Dockerfile            # Agent container
 ├── .env                  # Environment variables (set via ast configure; not committed)
 └── package.json
 ```
@@ -58,6 +70,7 @@ nextgig/
 1. **Onboarding (chat or PDF):** the user pastes their LinkedIn profile / resume **or uploads a PDF** (LinkedIn "Save to PDF" export, or a CV). Uploaded PDFs are parsed to text server-side (`unpdf`) and fed to the agent like a paste. The agent extracts a structured skill matrix, then asks for location (city, country, remote preference) and notification settings (email + daily/weekly cadence).
 2. **Scheduled digests:** an in-process scheduler wakes hourly, finds subscriptions whose cadence has elapsed, searches the web for matching open roles, **de-duplicates against everything already emailed to that subscriber, verifies each candidate link is a live posting (drops 404/expired/filled pages), and emails only the new, live roles** via Resend (skipping the email entirely when nothing is new). Link verification is conservative — network errors / bot-blocks are kept, never over-pruned — and can be disabled with `NEXTGIG_VERIFY_LINKS=0`. Every run is logged to the `digest_runs` table.
 3. **On demand:** "send me one now" runs an immediate search and email; the agent can also discuss matches directly in chat.
+4. **Application tracking:** tell it when you apply ("I applied to the Wolt one") and it files the posting; report outcomes ("I have an interview", "they rejected me") and it updates the status. Ask "what have I applied to?" for a dated list, and applied roles never come back in a digest.
 
 LinkedIn is never scraped — the user pastes their profile. The **model and web
 search both run through the Astro AI Gateway** (no provider key to bring); see
@@ -71,18 +84,27 @@ The agent is configured in `astropods.yml`. Key sections:
 
 | Integration | Type | Environment variable | Required |
 |------------|------|---------------------|----------|
-| Astro AI Gateway | Model + web search (via gateway MCP) | `ASTRO_GATEWAY_URL`, `ASTRO_GATEWAY_API_KEY` (injected by `astro_ai_gateway: true`) | yes |
-| Anthropic (fallback) | Model + native web search, local dev only | `ANTHROPIC_API_KEY` | no |
+| Astro AI Gateway | Model + server-side web search | `ASTRO_GATEWAY_URL`, `ASTRO_GATEWAY_API_KEY`, `MODEL_DEFAULT` (all injected by the `models.default` gateway block) | yes |
 | Resend | Email delivery | `RESEND_API_KEY` | for notifications |
 | Resend (optional) | From address | `RESEND_FROM` | no (defaults to `onboarding@resend.dev`) |
 
-**Model + search:** `agent.astro_ai_gateway: true` gives the agent a managed
-per-tenant key — no provider key required. The model runs on the gateway's
-OpenAI-compatible endpoint; job search is the gateway's server-side **Tavily
-MCP** tool (executed gateway-side by Bifrost). The gateway's virtual key must be
-granted access to that MCP server in Bifrost, or no search tools are injected.
-Without the gateway (plain local `bun` run), set `ANTHROPIC_API_KEY` and the
-agent falls back to direct Anthropic with native web search.
+**Model + search:** declaring a gateway model gives the agent a managed
+per-tenant credential — no provider API key anywhere in this project:
+
+```yaml
+models:
+  default:
+    provider: gateway
+    models: [gpt-5-6-luna]
+```
+
+The model runs on the gateway's OpenAI-compatible endpoint (Responses API) and
+`web_search` is a **provider-executed** tool: the model asks, the gateway runs
+the search (Bedrock Web Search) and returns a grounded, cited answer. A
+client-side `web_fetch` tool opens individual posting URLs to pull the direct
+apply link and to check the page really is that posting (guarding against
+hallucinated links and expired job ids). Run `ast login` first — the gateway
+is account-scoped. Details in [`docs/ai-gateway.md`](docs/ai-gateway.md).
 
 ### Email (Resend) setup
 
@@ -91,7 +113,7 @@ passwords, no 2FA, and unaffected by Google Workspace policies. Two ways to set 
 
 - **In-app (easiest):** open the **⚙ Settings** panel (top-right of the frontend),
   paste your Resend API key, optionally set a From address, and hit **Save & send
-  test**. Stored in the writable `./data` db.
+  test**. Stored in the `settings` table.
 - **Server secret (production):** set `RESEND_API_KEY` via `ast secrets` /
   `ast project configure`. This **takes precedence** over the in-app value.
 
@@ -107,21 +129,33 @@ emails are skipped.
 
 ### Data & persistence
 
-All state lives in one file-backed LibSQL database at `./data/nextgig.db`
-(`agent/storage.ts`), separate from the app code:
+All state lives in a **Postgres knowledge store deployed with the agent**,
+declared in `astropods.yml`:
+
+```yaml
+knowledge:
+  db:
+    provider: postgres
+```
+
+Provider-mode knowledge entries always get a persistent volume, so the data
+survives restarts *and* redeploys. The platform generates a managed user and a
+random password and injects `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`,
+`POSTGRES_PASSWORD`, and `POSTGRES_DB`; `agent/storage.ts` reads all five and
+owns the shared connection pool. Tables (created on first use by `agent/db.ts`):
 
 - `subscriptions` — skill matrix, location, cadence, email, and `last_run_at`
 - `sent_jobs` — per-subscriber fingerprints of already-emailed roles (de-dup)
+- `applications` — postings the user applied to, with status and notes
 - `digest_runs` — history of every scheduled/on-demand search
 - `settings` — runtime config (e.g. the in-app Resend key)
-- Mastra conversation memory
+- Mastra conversation memory (`mastra_*`, via `@mastra/pg`)
 
-Because the schedule's `last_run_at` is persisted, a **process/container restart
-resumes cleanly** — no lost cadence, no re-blast. ⚠️ `./data` must be a
-**persistent volume** to survive a full redeploy/fresh container; the Dockerfile
-pre-creates the dir but doesn't guarantee a volume. For durable production
-persistence, mount a volume at `./data` or switch the store to a managed
-`knowledge` provider (e.g. Postgres).
+Because the schedule's `last_run_at` is persisted, a **restart or redeploy
+resumes cleanly** — no lost cadence, no re-blast, and no lost profile or
+application history. The agent's own container filesystem is *not* durable (the
+spec has no volume option for the agent), which is exactly why nothing is stored
+there.
 
 ### Interfaces
 - **Custom frontend** — chat UI with PDF upload, served on port 80 by the agent process (`agent/webserver.ts`). This is the only user-facing interface; the agent is driven in-process via `agent.generate()` (no messaging sidecar).

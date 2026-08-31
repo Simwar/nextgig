@@ -4,9 +4,9 @@
  * Astropods has no native scheduling primitive yet, so we run the scheduler
  * inside the agent: a node-cron tick wakes hourly, finds subscriptions whose
  * cadence interval has elapsed, asks the agent to find matching postings
- * (using Anthropic's native web search — no jobs-API key), de-duplicates them
- * against everything already emailed to that subscriber, and emails only the
- * NEW ones via Resend. Email delivery is done here (not by an LLM tool) so it's
+ * (using the gateway's server-side web search — no jobs-API key), de-duplicates
+ * them against everything already emailed to that subscriber, and emails only
+ * the NEW ones via Resend. Email delivery is done here (not by an LLM tool) so it's
  * deterministic, and every run is logged to digest_runs.
  */
 
@@ -19,11 +19,16 @@ import {
   getRecentSentJobs,
   recordSentJobs,
   logDigestRun,
+  listApplications,
+  jobFingerprint,
+  normalizeUrl,
   type Subscription,
   type SentJobRecord,
+  type Application,
 } from './db';
 import { sendEmail, isEmailConfigured } from './email';
 import { cleanReply } from './sanitize';
+import { fetchPage, looksClosed } from './fetchpage';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // How far back to remember sent jobs for de-duplication, and the cap on how
@@ -31,29 +36,14 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const DEDUP_LOOKBACK_MS = 60 * DAY_MS;
 const DEDUP_MAX = 200;
 const EXCLUDE_IN_PROMPT = 60;
+// Applications are far fewer than sent jobs, so all of them fit in the prompt.
+const APPLIED_IN_PROMPT = 100;
 
 // Link verification: open each candidate posting and drop obvious dead ones.
+// Uses the same fetch path as the agent's `web_fetch` tool (agent/fetchpage.ts).
 const VERIFY_TIMEOUT_MS = 8000;
 const VERIFY_BODY_BYTES = 20000;
 const VERIFY_DISABLED = process.env.NEXTGIG_VERIFY_LINKS === '0';
-// High-signal phrases that a posting is closed/expired. Kept conservative so we
-// don't drop live postings because of generic text elsewhere on the page.
-const DEAD_PHRASES = [
-  'no longer available',
-  'no longer accepting applications',
-  'no longer open',
-  'position has been filled',
-  'this position is closed',
-  'this job is closed',
-  'posting has expired',
-  'this job has expired',
-  'this job is no longer',
-  'job posting is no longer',
-  'this role has been filled',
-  'application deadline has passed',
-  'job not found',
-  'position not found',
-];
 
 const CRON_RESOURCE_ID = 'nextgig-scheduler';
 const CRON_THREAD_PREFIX = 'digest:';
@@ -162,9 +152,12 @@ export async function runDigest(
   try {
     const now = Date.now();
     const recent = await getRecentSentJobs(sub.id, now - DEDUP_LOOKBACK_MS, DEDUP_MAX);
-    const seen = new Set(recent.map((r) => r.fingerprint));
+    // Roles the user already applied to must never come back in a digest, even
+    // if they were found in chat rather than emailed.
+    const applied = await listApplications(sub.id, APPLIED_IN_PROMPT);
+    const seen = new Set([...recent.map((r) => r.fingerprint), ...applied.map((a) => a.fingerprint)]);
 
-    const result = await agentRef.generate(buildDigestPrompt(sub, recent), {
+    const result = await agentRef.generate(buildDigestPrompt(sub, recent, applied), {
       memory: {
         thread: `${CRON_THREAD_PREFIX}${sub.id}:${now}`,
         resource: CRON_RESOURCE_ID,
@@ -179,7 +172,7 @@ export async function runDigest(
     // Fallback: model didn't return clean JSON. Best-effort — send the raw text
     // once, recording URL fingerprints so we still de-dupe next time.
     if (parsed === null) {
-      const fresh = extractUrls(replyText).filter((u) => !seen.has('u:' + normUrl(u)));
+      const fresh = extractUrls(replyText).filter((u) => !seen.has('u:' + normalizeUrl(u)));
       if (fresh.length === 0) {
         await logDigestRun(sub.id, now, 0, 0, false);
         await markNotified(sub.id, now);
@@ -187,7 +180,7 @@ export async function runDigest(
       }
       const body = replyText.trim();
       await sendEmail({ to: sub.email, subject: digestSubject(sub, fresh.length), text: body });
-      await recordSentJobs(sub.id, fresh.map((u) => ({ fingerprint: 'u:' + normUrl(u), url: u, title: '', company: '' })), now);
+      await recordSentJobs(sub.id, fresh.map((u) => ({ fingerprint: 'u:' + normalizeUrl(u), url: u, title: '', company: '' })), now);
       await logDigestRun(sub.id, now, fresh.length, fresh.length, true);
       await markNotified(sub.id, now);
       return { sent: true, foundCount: fresh.length, newCount: fresh.length, body };
@@ -195,7 +188,7 @@ export async function runDigest(
 
     const fresh: (Job & { fingerprint: string })[] = [];
     for (const j of parsed) {
-      const fp = fingerprint(j);
+      const fp = jobFingerprint(j);
       if (seen.has(fp)) continue;
       seen.add(fp);
       fresh.push({ ...j, fingerprint: fp });
@@ -247,7 +240,11 @@ function digestSubject(sub: Subscription, n: number): string {
   return `NextGig: ${n} new match${n === 1 ? '' : 'es'} in ${where}`;
 }
 
-function buildDigestPrompt(sub: Subscription, recent: SentJobRecord[]): string {
+function buildDigestPrompt(
+  sub: Subscription,
+  recent: SentJobRecord[],
+  applied: Application[] = [],
+): string {
   const { matrix } = sub;
   const titles = matrix.targetTitles.join(', ') || matrix.headline || 'roles matching their skills';
   const skills = matrix.skills.map((s) => `${s.name} (${s.level})`).join(', ');
@@ -267,9 +264,23 @@ function buildDigestPrompt(sub: Subscription, recent: SentJobRecord[]): string {
           '',
         ].join('\n');
 
+  const appliedBlock =
+    applied.length === 0
+      ? ''
+      : [
+          'ALREADY APPLIED — the candidate has applied to these, never suggest them again:',
+          ...applied.map(
+            (a) => `- ${a.title || '?'}${a.company ? ' @ ' + a.company : ''}${a.url ? ' ' + a.url : ''}`,
+          ),
+          '',
+        ].join('\n');
+
   return [
     'You are finding NEW job postings for a candidate and returning them as JSON.',
-    'Use the available web search tool to find REAL, currently-open postings.',
+    'Use web_search to find REAL, currently-open postings. Use web_fetch (passing expectedTitle and',
+    'expectedCompany) to open a candidate URL, drop anything with postingGone: true, and pick up the',
+    'direct apply link. A posting with contentConfirmed: false is unproven, not necessarily dead —',
+    'prefer confirmed ones, and never invent a URL to replace one you could not confirm.',
     '',
     'Candidate profile:',
     `- Target titles: ${titles}`,
@@ -283,6 +294,7 @@ function buildDigestPrompt(sub: Subscription, recent: SentJobRecord[]): string {
     '(site:boards.greenhouse.io, site:jobs.lever.co, site:jobs.ashbyhq.com, company /careers pages), not aggregator homepages.',
     '',
     excludeBlock,
+    appliedBlock,
     'Return ONLY a JSON object (no prose, no markdown, no code fences) of exactly this shape:',
     '{"jobs":[{"title":"...","company":"...","location":"...","url":"https://...","reason":"one line on why it fits"}]}',
     '- At most 8 of the strongest NEW matches, best first.',
@@ -292,17 +304,6 @@ function buildDigestPrompt(sub: Subscription, recent: SentJobRecord[]): string {
   ]
     .filter(Boolean)
     .join('\n');
-}
-
-/** Stable identity for a posting: normalized URL if present, else title|company. */
-function fingerprint(j: Job): string {
-  const u = normUrl(j.url);
-  if (u) return 'u:' + u;
-  return 't:' + j.title.trim().toLowerCase() + '|' + j.company.trim().toLowerCase();
-}
-
-function normUrl(u: string): string {
-  return (u || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/[#?].*$/, '').replace(/\/+$/, '');
 }
 
 /** Parse the model's JSON output. Returns null if it isn't valid JSON. */
@@ -348,31 +349,11 @@ function extractUrls(text: string): string[] {
 async function isLivePosting(url: string): Promise<boolean> {
   if (VERIFY_DISABLED) return true;
   if (!/^https?:\/\//i.test(url)) return false; // no usable link -> not worth emailing
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), VERIFY_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: ctrl.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; NextGigBot/1.0; +https://astropods.com)',
-        Accept: 'text/html,application/xhtml+xml,*/*',
-      },
-    });
-    if (res.status === 404 || res.status === 410) return false;
-    let body = '';
-    try {
-      body = (await res.text()).slice(0, VERIFY_BODY_BYTES).toLowerCase();
-    } catch {
-      return true; // couldn't read body -> don't prune
-    }
-    return !DEAD_PHRASES.some((p) => body.includes(p));
-  } catch {
-    return true; // timeout / network error / blocked -> uncertain, keep it
-  } finally {
-    clearTimeout(timer);
-  }
+  const page = await fetchPage(url, { timeoutMs: VERIFY_TIMEOUT_MS });
+  // Timeout / network error / blocked -> uncertain, keep it.
+  if (!page.completed) return true;
+  if (page.status === 404 || page.status === 410) return false;
+  return !looksClosed(page.html.slice(0, VERIFY_BODY_BYTES));
 }
 
 function renderDigest(sub: Subscription, jobs: Job[]): { text: string; html: string } {

@@ -20,6 +20,13 @@ import { getSetting, setSetting } from './settings';
 import { cleanReply } from './sanitize';
 
 const SESSION_COOKIE = 'jh_session';
+
+/**
+ * Asked on the same thread when a turn produces no text, so the model writes up
+ * what its tools already returned instead of the user seeing an error.
+ */
+const NUDGE_PROMPT =
+  'Write your reply to my last message now, using what you already found. Do not call any tools.';
 const MAX_PDF_BYTES = 10 * 1024 * 1024; // 10 MB
 
 /** Parse the session id from the Cookie header, or mint a new one. */
@@ -58,10 +65,10 @@ async function rotateChatThread(sessionId: string): Promise<string> {
 }
 
 /**
- * A stored tool result the provider can't re-serialize (e.g. an Anthropic
- * server-tool error block that @ai-sdk/anthropic rejects) makes the whole
- * thread history un-replayable — every later turn throws in
- * convertToAnthropicPrompt. Detect that so we can recover by starting fresh.
+ * A stored tool result the provider can't re-serialize (e.g. a server-side
+ * web_search error block the provider rejects on replay) makes the whole thread
+ * history un-replayable — every later turn throws while converting the stored
+ * messages back into a prompt. Detect that so we can recover by starting fresh.
  */
 function isHistoryPoisonError(err: unknown): boolean {
   const s = err instanceof Error ? err.stack || err.message : String(err);
@@ -73,13 +80,14 @@ function isHistoryPoisonError(err: unknown): boolean {
 /**
  * Produce the agent's reply for a session and emit it via onDelta.
  *
- * The model call is NON-STREAMING (`agent.generate()`), which is REQUIRED for
- * the gateway's Bifrost MCP "agent mode": auto-execution of MCP tools (our
- * Tavily web search) only runs on complete responses — it is incompatible with
- * streaming (`chat_stream`), which silently skips the tool loop. See
- * https://docs.getbifrost.ai/mcp/agent-mode. The browser connection is kept
- * alive during the (silent) generate() by the heartbeat in streamingResponse;
- * the full text is emitted as a single chunk when it resolves.
+ * The model call is NON-STREAMING (`agent.generate()`). The gateway's web_search
+ * runs server-side and returns nothing until the grounded answer is complete, so
+ * there is little to stream anyway; the browser connection is kept alive during
+ * the (silent) generate() by the heartbeat in streamingResponse, and the full
+ * text is emitted as a single chunk when it resolves. (Streaming was originally
+ * ruled out by Bifrost's MCP agent mode, which skips its tool loop on
+ * `chat_stream`; that no longer applies now that search is a provider-executed
+ * tool, so token-by-token output could be revisited.)
  *
  * Keeps conversation memory + subscriber id aligned, and self-heals a poisoned
  * history by rotating to a fresh thread (safe here: nothing is emitted until
@@ -90,12 +98,32 @@ async function streamReply(
   sessionId: string,
   prompt: string,
   onDelta: (chunk: string) => void,
+  onStatus: (message: string) => void = () => {},
 ): Promise<string> {
-  return requestContext.run({ userId: sessionId }, async () => {
+  return requestContext.run({ userId: sessionId, onStatus }, async () => {
     const generateOn = async (thread: string): Promise<string> => {
-      const res = await agent.generate(prompt, { memory: { thread, resource: sessionId } });
+      const res = await agent.generate(prompt, {
+        memory: { thread, resource: sessionId },
+        onStepFinish: (step: unknown) => onStatus(describeStep(step)),
+      });
       // Strip any Bifrost agent-mode tool-dump / narration scaffolding.
-      return cleanReply(res.text);
+      const text = cleanReply(res.text);
+      if (text) return text;
+
+      // The turn ended with no text at all — seen when a long search + fetch
+      // sweep uses up the step budget right after a tool call. The model already
+      // has everything it needs, so ask it once for the answer with tools off
+      // rather than showing the user an error.
+      console.warn('[frontend] model returned no usable text; asking for a final answer', {
+        finishReason: (res as { finishReason?: string }).finishReason,
+        steps: (res as { steps?: unknown[] }).steps?.length,
+      });
+      onStatus('Writing up what I found…');
+      const retry = await agent.generate(NUDGE_PROMPT, {
+        memory: { thread, resource: sessionId },
+        toolChoice: 'none',
+      });
+      return cleanReply(retry.text);
     };
     const firstThread = await chatThreadId(sessionId);
     let text: string;
@@ -107,22 +135,63 @@ async function streamReply(
       const fresh = await rotateChatThread(sessionId);
       text = await generateOn(fresh);
     }
-    if (text) onDelta(text);
+    // Still nothing to say: emit something honest rather than letting the
+    // frontend fall back to a bare "Something went wrong."
+    if (!text) {
+      console.error('[frontend] no reply produced even after the final-answer retry');
+      text =
+        "Sorry — I ran that search but couldn't put the reply together. Ask me again and I'll " +
+        'have another go.';
+    }
+    onDelta(text);
     return text;
   });
 }
 
 /**
+ * Progress line for a finished generation step.
+ *
+ * This only reports the gateway's provider-executed `web_search`, because that
+ * is the one piece of work no tool of ours can announce: it runs inside the
+ * gateway. Our own tools report themselves from inside `execute` via
+ * `reportStatus`, which is both earlier and more specific (it names the host
+ * being opened), so adding a step-level line for them would just overwrite a
+ * better message with a vaguer one.
+ *
+ * Returns '' for "no update" — never a generic filler, which would otherwise
+ * reset the label to "Thinking…" after every tool call.
+ *
+ * Note the shape: Mastra wraps each call, so the name is at `payload.toolName`.
+ */
+function describeStep(step: unknown): string {
+  const calls =
+    (step as { toolCalls?: { toolName?: string; payload?: { toolName?: string } }[] })?.toolCalls ??
+    [];
+  const names = calls
+    .map((c) => c?.payload?.toolName ?? c?.toolName)
+    .filter((n): n is string => Boolean(n));
+  return names.some((n) => n.includes('web_search')) ? 'Searching the web…' : '';
+}
+
+/**
  * Build a streamed NDJSON response that runs `producer` (which emits text
- * deltas) while sending a heartbeat every 15s. This keeps bytes flowing during
+ * deltas and status lines) while sending a heartbeat every 15s. This keeps bytes flowing during
  * long, silent web-search turns so no idle-timeout (Bun or platform ingress)
  * drops the connection. Each line is one JSON event:
- *   {"t":"delta","v":"..."} | {"t":"ping"} | {"t":"done"} | {"t":"error","v":"..."}
+ *   {"t":"delta","v":"..."} | {"t":"status","v":"..."} | {"t":"ping"} |
+ *   {"t":"done"} | {"t":"error","v":"..."}
+ *
+ * Status lines are what the user sees while generate() is silent, so one is sent
+ * immediately and then whenever a tool reports progress.
  */
 function streamingResponse(
   session: { id: string; isNew: boolean },
-  producer: (onDelta: (chunk: string) => void) => Promise<string>,
+  producer: (
+    onDelta: (chunk: string) => void,
+    onStatus: (message: string) => void,
+  ) => Promise<string>,
   onError: (err: unknown) => string,
+  initialStatus = 'Thinking…',
 ): Response {
   const enc = new TextEncoder();
   const body = new ReadableStream<Uint8Array>({
@@ -131,10 +200,18 @@ function streamingResponse(
         try { controller.enqueue(enc.encode(JSON.stringify(obj) + '\n')); } catch { /* closed */ }
       };
       const heartbeat = setInterval(() => send({ t: 'ping' }), 15000);
+      send({ t: 'status', v: initialStatus });
       try {
-        let sawDelta = false;
-        await producer((chunk) => { sawDelta = true; send({ t: 'delta', v: chunk }); });
-        void sawDelta;
+        let lastStatus = initialStatus;
+        await producer(
+          (chunk) => send({ t: 'delta', v: chunk }),
+          (message) => {
+            // Skip repeats so the label doesn't flicker on a run of similar steps.
+            if (!message || message === lastStatus) return;
+            lastStatus = message;
+            send({ t: 'status', v: message });
+          },
+        );
         send({ t: 'done' });
       } catch (err) {
         console.error('[frontend] stream producer failed:', err);
@@ -190,7 +267,7 @@ export function startFrontend(agent: Agent): void {
         if (!message) return json({ error: 'Empty message.' }, session, 400);
         return streamingResponse(
           session,
-          (onDelta) => streamReply(agent, session.id, message, onDelta),
+          (onDelta, onStatus) => streamReply(agent, session.id, message, onDelta, onStatus),
           () => 'The agent could not respond. Please try again.',
         );
       }
@@ -234,13 +311,14 @@ export function startFrontend(agent: Agent): void {
           `<<<PROFILE\n${profileText}\nPROFILE>>>`;
 
         // Step 2 — stream the agent's reply. A failure here is a model/config
-        // problem (e.g. missing ANTHROPIC_API_KEY), NOT a PDF problem — say so.
+        // problem (e.g. missing gateway credentials), NOT a PDF problem — say so.
         return streamingResponse(
           session,
-          (onDelta) => streamReply(agent, session.id, prompt, onDelta),
+          (onDelta, onStatus) => streamReply(agent, session.id, prompt, onDelta, onStatus),
           () =>
             "I read your PDF fine, but the agent couldn't respond — the model call failed " +
-            '(most often a missing/invalid ANTHROPIC_API_KEY, or a rate limit). Check the server logs and try again.',
+            '(most often missing/invalid Astro AI Gateway credentials, or a rate limit). Check the server logs and try again.',
+          'Reading your profile…',
         );
       }
 

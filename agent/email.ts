@@ -4,7 +4,7 @@
  * Resend needs just one API key — no SMTP, no app passwords, no 2FA, and it's
  * unaffected by Google Workspace policies. The key can come from the
  * RESEND_API_KEY env var (preferred for production, via `ast secrets`) or be
- * set at runtime from the app's Settings panel (stored in ./data). Env wins.
+ * set at runtime from the app's Settings panel (stored in Postgres). Env wins.
  *
  * Sending uses the Resend REST API directly (fetch) — no extra dependency.
  * Until a domain is verified in Resend, the default sender onboarding@resend.dev

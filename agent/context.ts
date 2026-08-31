@@ -11,6 +11,11 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 export interface RequestContext {
   conversationId?: string;
   userId?: string;
+  /**
+   * Optional progress sink. The frontend passes one so tools can tell the user
+   * what is happening during a long turn (see agent/webserver.ts).
+   */
+  onStatus?: (message: string) => void;
 }
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
@@ -23,4 +28,13 @@ export const requestContext = new AsyncLocalStorage<RequestContext>();
 export function currentSubscriberId(): string {
   const ctx = requestContext.getStore();
   return ctx?.userId || ctx?.conversationId || 'default';
+}
+
+/** Report progress to the UI, if this request has a status sink. Never throws. */
+export function reportStatus(message: string): void {
+  try {
+    requestContext.getStore()?.onStatus?.(message);
+  } catch {
+    // Progress reporting must never break a tool call.
+  }
 }
