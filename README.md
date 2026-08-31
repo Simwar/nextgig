@@ -22,6 +22,10 @@ Builds a skill matrix from a user's pasted LinkedIn profile (or uploaded PDF/CV)
 > need to add authentication and gate the operator settings before exposing it
 > publicly.
 
+<div align="center">
+  <img src="assets/screenshot.png" alt="The NextGig chat UI: upload a PDF, paste a profile, or ask what you have applied to" width="560">
+</div>
+
 ## Quick start
 
 ```bash

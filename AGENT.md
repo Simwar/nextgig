@@ -38,6 +38,10 @@ Job hunting is the same loop over and over: run the same searches, re-read listi
 
 NextGig runs that loop for you. Give it your LinkedIn profile or CV once and it emails you a short digest of **new, still-open** roles that match your skills and location — nothing you've been shown before. Tell it when you apply, and it keeps the list.
 
+<div align="center">
+  <img src="https://raw.githubusercontent.com/Simwar/nextgig/master/assets/screenshot.png" alt="The NextGig chat UI: upload a PDF, paste a profile, or ask what you have applied to" width="560">
+</div>
+
 > **Personal (single-user) agent.** Deploy it by yourself, for yourself, and keep the deployment private. There is no authentication, email settings are shared per deployment, and all model and email usage bills to your account. See [`docs/single-vs-multi-user.md`](docs/single-vs-multi-user.md) for what running it for other people would take.
 
 ## Overview
