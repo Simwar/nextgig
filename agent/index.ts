@@ -241,5 +241,7 @@ new Mastra({
 initScheduler(agent, { memory });
 
 // Serve the custom chat + PDF-upload frontend on port 80. This is the only
-// user-facing interface, and Bun.serve keeps the process alive.
-startFrontend(agent);
+// user-facing interface, and Bun.serve keeps the process alive. Memory is passed
+// so /api/history can read a thread back — the UI uses it to repopulate on
+// reload and to recover a reply whose stream was cut mid-turn.
+startFrontend(agent, { memory });

@@ -357,12 +357,50 @@ export const INDEX_HTML = String.raw`<!doctype html>
 
   function setBusy(b) { busy = b; sendBtn.disabled = b; attachBtn.disabled = b; }
 
+  // Turns currently on screen, as counted by the server's thread.
+  var known = 0;
+
+  // Repaint the conversation from the server's copy of the thread. Idempotent by
+  // design — it clears and re-renders rather than appending a diff — so it can
+  // be called on load and again after a dropped stream without duplicating or
+  // skipping anything. Returns the number of turns rendered.
+  async function repaintFromServer() {
+    const r = await fetch('/api/history');
+    if (!r.ok) return known;
+    const d = await r.json();
+    const msgs = d.messages || [];
+    if (!msgs.length) return 0;
+    chat.innerHTML = '';
+    for (const m of msgs) addMsg(m.role, m.role === 'user' ? esc(m.text) : md(m.text));
+    known = typeof d.total === 'number' ? d.total : msgs.length;
+    hideHero();
+    return known;
+  }
+
+  // A stream died before any reply text arrived. The agent finishes the turn
+  // regardless (an ingress read timeout in front of a minute-long PDF or search
+  // turn cuts the response, not the work), so the reply lands in memory: wait
+  // for it and repaint. Beats telling the user to try again, which would re-run
+  // the turn and duplicate a save_profile or a search.
+  async function recoverTurn(typing, base) {
+    typing.setStatus('Connection dropped - fetching the reply...');
+    for (const waitMs of [1000, 3000, 6000, 10000, 15000, 20000]) {
+      await new Promise((r) => setTimeout(r, waitMs));
+      try {
+        if (await repaintFromServer() > base) { typing.remove(); return true; }
+      } catch (e) { /* the turn may still be running - keep waiting */ }
+    }
+    typing.remove();
+    return false;
+  }
+
   // Consume a streamed NDJSON response (see agent/webserver.ts). Shows the typing
   // bubble — dots, a server-driven status label, and an elapsed counter — until
   // the first delta, then converts to a bot bubble that grows as text arrives.
   // Events: {t:'delta'|'status'|'ping'|'done'|'error', v?}.
   async function consumeStream(resp, fallback) {
     const typing = addTyping();
+    const base = known; // turns stored before this one, for recovery
     let bubble = null, acc = '';
     function ensureBubble() {
       if (bubble) return bubble;
@@ -394,13 +432,18 @@ export const INDEX_HTML = String.raw`<!doctype html>
         }
       }
     } catch (e) {
-      if (!acc) { typing.remove(); addMsg('bot', md('Network error - please try again.')); return; }
+      if (!acc) {
+        if (await recoverTurn(typing, base)) return;
+        addMsg('bot', md('The connection dropped and I could not fetch the reply. It may still have gone through - ask "what do you have saved for me?" before repeating yourself.'));
+        return;
+      }
       errMsg = errMsg || 'The connection dropped before the reply finished.';
     }
     if (errMsg && !acc) { typing.remove(); addMsg('bot', md(errMsg)); return; }
     if (errMsg) { acc += '\n\n_' + errMsg + '_'; render(); return; }
     if (!acc) { typing.remove(); addMsg('bot', md(fallback)); return; }
     render();
+    known = base + 2; // this turn's user message and reply are now stored
   }
 
   async function sendMessage(text) {
@@ -517,6 +560,15 @@ export const INDEX_HTML = String.raw`<!doctype html>
       emailNote.textContent = 'Something went wrong - please try again.';
     } finally { saveTestBtn.disabled = false; }
   });
+
+  // Restore the conversation on load. The thread lives server-side (Postgres),
+  // so a reload — or a browser that gave up mid-turn — picks up where it left
+  // off instead of showing an empty chat.
+  (async () => {
+    try {
+      await repaintFromServer();
+    } catch (e) { /* first visit, or history unavailable: leave the hero up */ }
+  })();
 
   input.focus();
 </script>

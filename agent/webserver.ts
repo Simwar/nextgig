@@ -9,9 +9,17 @@
  *
  * A per-browser session cookie drives both the memory thread and the subscriber
  * id (set via requestContext, so the tools persist to the right subscription).
+ *
+ * Turns are long (a PDF upload or a job search can run for a minute), and the
+ * agent keeps working even if the browser connection dies — an ingress read
+ * timeout in front of the agent will cut the response while the model call runs
+ * to completion and its reply is stored in memory. So the reply is never only in
+ * flight: `GET /api/history` reads it back from the thread, which lets the UI
+ * recover from a dropped stream and repopulate on reload.
  */
 
 import type { Agent } from '@mastra/core/agent';
+import type { Memory } from '@mastra/memory';
 import { extractText, getDocumentProxy } from 'unpdf';
 import { requestContext } from './context';
 import { INDEX_HTML } from './frontend';
@@ -20,6 +28,13 @@ import { getSetting, setSetting } from './settings';
 import { cleanReply } from './sanitize';
 
 const SESSION_COOKIE = 'jh_session';
+
+/**
+ * Opening of the prompt synthesized for a PDF upload. Shared with readHistory,
+ * which recognises it and shows the file name instead of replaying the whole
+ * extracted profile back into the chat.
+ */
+const UPLOAD_PROMPT_PREFIX = "I've uploaded my professional profile ";
 
 /**
  * Asked on the same thread when a turn produces no text, so the model writes up
@@ -148,6 +163,66 @@ async function streamReply(
   });
 }
 
+/** One rendered turn for the UI. */
+export interface HistoryMessage {
+  role: 'user' | 'bot';
+  text: string;
+}
+
+/**
+ * The conversation for a session, oldest first, flattened to plain text.
+ *
+ * Reads the same thread the chat turns write to (including the rotated thread,
+ * if a poisoned history forced a rotation). Tool calls, tool results and empty
+ * assistant turns are dropped — this feeds a chat bubble, not the model.
+ */
+async function readHistory(memory: Memory, sessionId: string): Promise<HistoryMessage[]> {
+  const thread = await chatThreadId(sessionId);
+  const { messages } = await memory.recall({
+    threadId: thread,
+    resourceId: sessionId,
+    perPage: false,
+    page: 0,
+  });
+  const out: HistoryMessage[] = [];
+  for (const message of messages) {
+    const role = message.role === 'user' ? 'user' : message.role === 'assistant' ? 'bot' : null;
+    if (!role) continue;
+    const text = flattenText(message.content);
+    if (text) out.push({ role, text: role === 'user' ? displayUserText(text) : text });
+  }
+  return out;
+}
+
+/**
+ * What the user actually did, for a replayed user turn. A PDF upload is stored
+ * as a synthesized prompt wrapping the whole extracted profile; showing that
+ * back would be a wall of text they never typed, so it collapses to the file
+ * name — which is what the live UI shows too.
+ */
+function displayUserText(text: string): string {
+  if (!text.startsWith(UPLOAD_PROMPT_PREFIX)) return text;
+  const name = text.match(/\(from "([^"]+)"\)/);
+  return name ? `📎 ${name[1]}` : '📎 Uploaded profile';
+}
+
+/** Pull the human-readable text out of a stored message's content. */
+function flattenText(content: unknown): string {
+  if (typeof content === 'string') return cleanReply(content);
+  const parts = (content as { parts?: unknown[]; content?: unknown[] })?.parts
+    ?? (content as { content?: unknown[] })?.content
+    ?? (Array.isArray(content) ? content : []);
+  const text = (parts as unknown[])
+    .map((p) => {
+      if (typeof p === 'string') return p;
+      const part = p as { type?: string; text?: string };
+      return part?.type === 'text' && typeof part.text === 'string' ? part.text : '';
+    })
+    .join('')
+    .trim();
+  return cleanReply(text);
+}
+
 /**
  * Progress line for a finished generation step.
  *
@@ -235,7 +310,12 @@ function streamingResponse(
 }
 
 /** Start the frontend HTTP server. Call after the agent is constructed. */
-export function startFrontend(agent: Agent): void {
+export interface FrontendOptions {
+  /** Mastra memory, used to read a thread back for /api/history. */
+  memory: Memory;
+}
+
+export function startFrontend(agent: Agent, opts: FrontendOptions): void {
   const port = Number(process.env.PORT) || 80;
 
   Bun.serve({
@@ -272,6 +352,24 @@ export function startFrontend(agent: Agent): void {
         );
       }
 
+      // Read the conversation back from memory. Two jobs: repopulate the UI on
+      // reload, and let the client recover a reply whose stream died mid-turn
+      // (the turn still completed server-side). `after` lets the client ask for
+      // "anything newer than what I already have".
+      if (req.method === 'GET' && url.pathname === '/api/history') {
+        const after = Number(url.searchParams.get('after') ?? '0');
+        try {
+          const messages = await readHistory(opts.memory, session.id);
+          return json(
+            { messages: Number.isFinite(after) && after > 0 ? messages.slice(after) : messages, total: messages.length },
+            session,
+          );
+        } catch (err) {
+          console.error('[frontend] history read failed:', err);
+          return json({ messages: [], total: 0 }, session, 500);
+        }
+      }
+
       // PDF upload → extract text → onboard.
       if (req.method === 'POST' && url.pathname === '/api/upload') {
         const form = await req.formData().catch(() => null);
@@ -305,7 +403,7 @@ export function startFrontend(agent: Agent): void {
         }
 
         const prompt =
-          `I've uploaded my professional profile (from "${file.name}"). Here is the extracted text ` +
+          `${UPLOAD_PROMPT_PREFIX}(from "${file.name}"). Here is the extracted text ` +
           `between the markers. Build my skill matrix from it (call save_profile), briefly summarize what ` +
           `you captured, then continue onboarding by asking about my location.\n\n` +
           `<<<PROFILE\n${profileText}\nPROFILE>>>`;
